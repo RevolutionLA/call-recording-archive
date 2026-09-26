@@ -91,6 +91,8 @@ def cmd_align(cfg, args):
     print(f"标注 me/other：{n} 通电话")
     m = identity.resolve_contacts(conn)
     print(f"联系人归属：{m} 个段落")
+    mg = identity.merge_same_person(conn, cfg["asr"].get("same_person_merge_sim", 0.8))
+    print(f"同人并档（不同号码同一声纹）：合并 {mg} 个联系人")
 
 
 def cmd_enroll_me(cfg, args):

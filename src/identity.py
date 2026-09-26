@@ -158,13 +158,125 @@ def _contact_embedding(conn, cid):
     return _norm(acc / len(rows))
 
 
+def merge_same_person(conn, sim_thr: float = 0.8):
+    """One person, several identities: merge duplicate contact profiles.
+    Pass 1: same phone number (deterministic). Pass 2: near-identical
+    voiceprint centroids but different numbers (>= sim_thr). The profile with
+    more traffic survives; the loser's phone/name is kept as an alias note."""
+    merged = 0
+    tag = "同一个人其他号码/称呼: "
+
+    def _parts(cid):
+        return conn.execute("SELECT name,phone,note FROM contacts WHERE id=?",
+                            (cid,)).fetchone()
+
+    def _has_real_name(cid):
+        r = _parts(cid)
+        return bool(r and r["name"] and r["name"] != r["phone"])
+
+    def _merge(keep_id, drop_id):
+        nonlocal merged
+        ra, rb = _parts(keep_id), _parts(drop_id)
+        if not ra or not rb or keep_id == drop_id:
+            return
+        conn.execute("UPDATE segments SET contact_id=? WHERE contact_id=?",
+                     (keep_id, drop_id))
+        conn.execute("UPDATE voiceprints SET contact_id=? WHERE contact_id=?",
+                     (keep_id, drop_id))
+        # rebuild alias list: dedup, drop values equal to the survivor's own
+        # name/phone, and repair notes written by earlier buggy merges
+        aliases = []
+        for part in (ra["note"] or "").split(" | "):
+            if part.startswith(tag):
+                aliases += [v for v in part[len(tag):].split(" / ") if v]
+        aliases = [v for v in dict.fromkeys(aliases) if v not in (ra["phone"], ra["name"])]
+        for v in (rb["phone"], rb["name"]):
+            if v and v not in (ra["phone"], ra["name"]) and v not in aliases:
+                aliases.append(v)
+        plain = [p for p in (ra["note"] or "").split(" | ") if not p.startswith(tag)]
+        note = " | ".join(plain + ([tag + " / ".join(aliases)] if aliases else []))
+        conn.execute("UPDATE contacts SET note=?,updated_at=? WHERE id=?",
+                     (note, db.now(), keep_id))
+        conn.execute("DELETE FROM contacts WHERE id=?", (drop_id,))
+        merged += 1
+
+    # pass 1: identical phone -> same person, no voiceprint needed
+    dups = conn.execute("SELECT phone FROM contacts WHERE phone IS NOT NULL AND phone<>'' "
+                        "GROUP BY phone HAVING COUNT(*)>1").fetchall()
+    for d in dups:
+        rows = conn.execute("SELECT id FROM contacts WHERE phone=? "
+                            "ORDER BY n_calls DESC, id ASC", (d["phone"],)).fetchall()
+        keep = next((r["id"] for r in rows if _has_real_name(r["id"])), rows[0]["id"])
+        for r in rows:
+            if r["id"] != keep:
+                _merge(keep, r["id"])
+
+    # pass 2: same voiceprint, different numbers
+    cents = {c["id"]: _contact_embedding(conn, c["id"]) for c in
+             conn.execute("SELECT id FROM contacts")}
+    ids = [i for i, v in cents.items() if v is not None]
+    for a in ids:
+        if conn.execute("SELECT 1 FROM contacts WHERE id=?", (a,)).fetchone() is None:
+            continue
+        for b in ids:
+            if b <= a:
+                continue
+            if conn.execute("SELECT 1 FROM contacts WHERE id=?", (b,)).fetchone() is None:
+                continue
+            if float(np.dot(cents[a], cents[b])) < sim_thr:
+                continue
+            na = conn.execute("SELECT n_calls FROM contacts WHERE id=?", (a,)).fetchone()["n_calls"] or 0
+            nb = conn.execute("SELECT n_calls FROM contacts WHERE id=?", (b,)).fetchone()["n_calls"] or 0
+            va, vb = _has_real_name(a), _has_real_name(b)
+            # a profile with a real name beats a bare number; otherwise more traffic wins
+            if va != vb:
+                keep, drop = (a, b) if va else (b, a)
+            else:
+                keep, drop = (a, b) if na >= nb else (b, a)
+            _merge(keep, drop)
+            if drop == a:
+                break
+
+    # a survivor that is just a number, but has a readable name in its
+    # aliases: promote that name to the display name
+    for r in conn.execute("SELECT id,name,phone,note FROM contacts "
+                          "WHERE name=phone AND name IS NOT NULL").fetchall():
+        aliases = []
+        for part in (r["note"] or "").split(" | "):
+            if part.startswith(tag):
+                aliases = [v for v in part[len(tag):].split(" / ") if v]
+        real = next((a for a in aliases if not a.isdigit()), None)
+        if real:
+            rest = [a for a in aliases if a not in (real, r["phone"])]
+            plain = [p for p in (r["note"] or "").split(" | ") if not p.startswith(tag)]
+            note = " | ".join(plain + ([tag + " / ".join(rest)] if rest else []))
+            conn.execute("UPDATE contacts SET name=?,note=?,updated_at=? WHERE id=?",
+                         (real, note, db.now(), r["id"]))
+
+    conn.execute("UPDATE contacts SET n_calls=(SELECT COUNT(DISTINCT call_id) FROM segments "
+                 "WHERE contact_id=contacts.id)")
+    conn.commit()
+    return merged
+
+
 def resolve_contacts(conn, match_thr: float = 0.55, seed_quality: float = 0.6):
     """Map 'other' segments to contacts by voiceprint; grow the library."""
-    # 1) make sure filename hints have contact rows
+    # 1) make sure filename hints have contact rows -- but never a second row
+    #    for a phone we already have (that churn fought the same-person merge)
     for r in conn.execute(
             "SELECT DISTINCT contact_hint, phone FROM calls "
             "WHERE contact_hint IS NOT NULL OR phone IS NOT NULL"):
         label = r["contact_hint"] or r["phone"]
+        if r["phone"]:
+            ex = conn.execute("SELECT id,name FROM contacts WHERE phone=?",
+                              (r["phone"],)).fetchone()
+            if ex:
+                if label != r["phone"] and ex["name"] == r["phone"] and \
+                        conn.execute("SELECT 1 FROM contacts WHERE name=?",
+                                     (label,)).fetchone() is None:
+                    conn.execute("UPDATE contacts SET name=?,updated_at=? WHERE id=?",
+                                 (label, db.now(), ex["id"]))
+                continue
         conn.execute("INSERT OR IGNORE INTO contacts(name,phone,updated_at) VALUES(?,?,?)",
                      (label, r["phone"], db.now()))
     conn.commit()
@@ -207,6 +319,9 @@ def resolve_contacts(conn, match_thr: float = 0.55, seed_quality: float = 0.6):
         elif hint:
             row = conn.execute("SELECT id FROM contacts WHERE name=?", (hint,)).fetchone()
             if row:
+                cid = row["id"]
+            elif call["phone"] and (row := conn.execute(
+                    "SELECT id FROM contacts WHERE phone=?", (call["phone"],)).fetchone()):
                 cid = row["id"]
             else:
                 cur = conn.execute("INSERT INTO contacts(name,phone,updated_at) VALUES(?,?,?)",

@@ -27,9 +27,41 @@ def _node(conn, type_, ref_id, label):
                         (type_, ref_id)).fetchone()[0]
 
 
+DEFAULT_SERVICE_KEYWORDS = [
+    "快递", "包裹", "取件", "驿站", "派件", "签收", "放门口", "前台", "到付",
+    "外卖", "骑手", "闪送", "餐品", "送达", "下单",
+    "打车", "网约车", "出租车", "师傅", "车牌", "尾号", "上车", "接单",
+]
+
+
+def service_call_ids(conn, cfg) -> set:
+    """Calls that read like courier/food-delivery/taxi handovers: keyword hits
+    (1 hit + short, or >=2 hits). These stay out of the relationship graph."""
+    sf = cfg.get("service_filter") or {}
+    kw = sf.get("keywords") or DEFAULT_SERVICE_KEYWORDS
+    max_sec = sf.get("max_sec", 180)
+    rows = conn.execute(
+        "SELECT c.id, c.duration_sec,"
+        " (SELECT GROUP_CONCAT(text_zh, ' ') FROM segments s WHERE s.call_id=c.id) t"
+        " FROM calls c WHERE c.status IN ('transcribed','analyzed')").fetchall()
+    out = set()
+    for r in rows:
+        t = r["t"] or ""
+        hits = sum(1 for k in kw if k in t)
+        dur = r["duration_sec"] or 0
+        if hits >= 2 or (hits >= 1 and dur <= max_sec):
+            out.add(r["id"])
+    return out
+
+
 def build(conn: sqlite3.Connection, cfg: dict, with_llm: bool = False):
     conn.execute("DELETE FROM graph_nodes"); conn.execute("DELETE FROM graph_edges")
     conn.execute("DELETE FROM events")
+    svc = service_call_ids(conn, cfg)
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS svc_calls(id INTEGER PRIMARY KEY)")
+    conn.execute("DELETE FROM svc_calls")
+    conn.executemany("INSERT OR IGNORE INTO svc_calls VALUES(?)", [(i,) for i in svc])
+    print(f"服务电话过滤：识别 {len(svc)} 通（快递/外卖/网约车），不进图谱")
     me_id = _node(conn, "me", None, "我")
     # person nodes from contacts
     contact_ids = {}
@@ -39,7 +71,8 @@ def build(conn: sqlite3.Connection, cfg: dict, with_llm: bool = False):
     for r in conn.execute(
             "SELECT s.contact_id cid, COUNT(*) n, MIN(c.call_time) t0, MAX(c.call_time) t1,"
             " SUM(c.duration_sec) dur FROM segments s JOIN calls c ON c.id=s.call_id"
-            " WHERE s.who='other' AND s.contact_id IS NOT NULL GROUP BY s.contact_id"):
+            " WHERE s.who='other' AND s.contact_id IS NOT NULL"
+            " AND c.id NOT IN (SELECT id FROM svc_calls) GROUP BY s.contact_id"):
         dst = contact_ids.get(r["cid"])
         if not dst:
             continue
@@ -50,7 +83,8 @@ def build(conn: sqlite3.Connection, cfg: dict, with_llm: bool = False):
     # events from LLM analysis
     n_ev = 0
     for c in conn.execute("SELECT id, call_time, analysis, contact_hint, phone FROM calls "
-                          "WHERE analysis IS NOT NULL"):
+                          "WHERE analysis IS NOT NULL"
+                          " AND id NOT IN (SELECT id FROM svc_calls)"):
         try:
             a = json.loads(c["analysis"])
         except (json.JSONDecodeError, TypeError):
