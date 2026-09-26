@@ -9,6 +9,8 @@ if not exist logs mkdir logs
 :loop
 "%PY%" pipeline.py scan >> logs\auto.log 2>&1
 "%PY%" pipeline.py run --workers 1 >> logs\auto.log 2>&1
+rem 精修：Qwen3-ASR 重听已切分段（内存不足时自动跳过本轮，不阻塞后面阶段）
+"%PY%" pipeline.py refine >> logs\auto.log 2>&1
 "%PY%" pipeline.py align   >> logs\auto.log 2>&1
 "%PY%" pipeline.py summarize >> logs\auto.log 2>&1
 "%PY%" pipeline.py graph   >> logs\auto.log 2>&1

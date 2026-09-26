@@ -73,7 +73,7 @@ python pipeline.py graph       # 关系图谱与事件时间线
 python pipeline.py web         # 打开驾驶舱 http://localhost:8760
 ```
 
-想更精的字级时间戳？可选 `python pipeline.py refine` 用 Qwen3-ASR + ForcedAligner 子进程桥接精修。
+想更准的字 + 字级时间戳？`python pipeline.py refine` 用 Qwen3-ASR + ForcedAligner 在已切分的语音段上「重听」一遍：中文专名、数字和方言口音（四川话/河南话）明显更稳，原文保留在 `segments.text_sv` 可回溯。它会用第二个 Python 环境的独立进程跑，内存不足时自动跳过本轮，也可排进自动摄取循环。
 
 ## 架构
 
@@ -84,9 +84,9 @@ python pipeline.py web         # 打开驾驶舱 http://localhost:8760
 run：normalize 16k → fsmn-vad → SenseVoice 逐段 → ct-punc
       → CAM++ 声纹 → 层次聚类(强制 k=2) → segments
    ▼
-align：跨通话质心聚类锁定「我」→ me/other/联系人标签
+refine(可选)：Qwen3-ASR + ForcedAligner 逐段重听 → 更准文字 + 字级时间戳
    ▼
-refine(可选)：Qwen3-ASR + ForcedAligner（子进程 JSONL 桥接）
+align：跨通话质心聚类锁定「我」→ me/other/联系人标签（同人不同号自动并档）
    ▼
 summarize：Ollama /api/chat → 摘要/待办/事件/情绪
    ▼

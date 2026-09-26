@@ -2,12 +2,31 @@
 
 Runs inside the conda `vllm` env (py3.10). Reads job JSONL on stdin-ish
 path arg, writes result JSONL. Each job:
-  {"call_id":int,"seg_id":int,"wav":str,"start_ms":int,"end_ms":int}
+  {"call_id":int,"seg_id":int,"wav":str,"start_ms":int,"end_ms":int,"context":str}
 Result:
   {"call_id":..,"seg_id":..,"text":str,"lang":str,"words":[{"w","s","e"}] in call ms}
 """
-import json, sys, wave
+import json, sys, types, wave
 import numpy as np
+
+
+def _stub_nagisa():
+    """qwen_asr imports the Japanese tokenizer `nagisa` at module load, which
+    MemoryErrors on a tight page file. Callers here are Mandarin (incl.
+    Sichuan/Henan accents), so replace it with a failing stub instead."""
+    try:
+        import nagisa  # noqa: F401
+        return
+    except Exception:
+        pass
+    m = types.ModuleType("nagisa")
+
+    def _unavailable(*a, **k):
+        raise RuntimeError("nagisa (Japanese tokenizer) is disabled; text is Mandarin")
+
+    m.tagging = _unavailable
+    m.Tagger = _unavailable
+    sys.modules["nagisa"] = m
 
 
 def read_slice(path, start_ms, end_ms):
@@ -50,10 +69,12 @@ def ts_to_words(ts):
 
 def main():
     job_file, out_file, asr_path, aligner_path = sys.argv[1:5]
+    lang = sys.argv[5] if len(sys.argv) > 5 else "Chinese"
     jobs = [json.loads(l) for l in open(job_file, encoding="utf-8") if l.strip()]
-    print(f"[qwen] {len(jobs)} jobs, loading {asr_path}", flush=True)
+    print(f"[qwen] {len(jobs)} jobs, lang={lang}, loading {asr_path}", flush=True)
 
     import torch
+    _stub_nagisa()
     from qwen_asr import Qwen3ASRModel
     kw = dict(torch_dtype=torch.bfloat16, device_map="cuda",
               low_cpu_mem_usage=True)
@@ -73,6 +94,8 @@ def main():
                 audios.append((a, sr))
             try:
                 res = model.transcribe(audio=audios if len(audios) > 1 else audios[0],
+                                       context=[j.get("context", "") for j in batch],
+                                       language=[lang] * len(batch) if lang else None,
                                        return_time_stamps=True)
             except Exception as e:
                 print(f"[qwen] batch {i} failed: {e}", flush=True)

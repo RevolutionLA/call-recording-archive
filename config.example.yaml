@@ -64,11 +64,16 @@ llm:
   enabled: true
 
 # ---------- Qwen3 精修（可选） ----------
+# 用第二个 Python 环境逐段「重听」已切分语音段：文字更准（专名/数字/方言口音），
+# 并给出字级时间戳；原文保留在 segments.text_sv。
 qwen:
   enabled: false
   python: "path/to/vllm-env/python.exe"     # 能跑 qwen_asr SDK 的环境
   asr_model_path: "path/to/Qwen3-ASR-1.7B"
   aligner_model_path: "path/to/Qwen3-ForcedAligner-0.6B"
+  language: "Chinese"     # 强制语种：方言口音下避免误判语种；留空则自动检测
+  min_avail_gb: 6         # 可提交内存低于此值本轮跳过（两模型加载约需 5GB）
+  batch_calls: 60         # 每批通话数（每批加载一次模型，越大越省）
 
 # ---------- Web 驾驶舱 ----------
 web:

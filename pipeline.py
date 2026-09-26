@@ -174,7 +174,7 @@ def main():
     args = ap.parse_args()
 
     cfg = config.load()
-    if args.command in ("run", "summarize", "align", "graph") and not args.jobs:
+    if args.command in ("run", "refine", "summarize", "align", "graph") and not args.jobs:
         if not _acquire_lock(args.command):
             print(f"[{args.command}] 已有实例在跑（data/lock_{args.command}.lock 被占），本实例跳过")
             return

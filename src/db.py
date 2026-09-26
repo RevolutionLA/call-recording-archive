@@ -131,6 +131,7 @@ CREATE TABLE IF NOT EXISTS sources(                        -- 外部录音库（
 
 MIGRATIONS = [
     "ALTER TABLE calls ADD COLUMN source_id INTEGER",
+    "ALTER TABLE segments ADD COLUMN text_sv TEXT",   # SenseVoice 原文（被 Qwen 精修覆盖前留存）
 ]
 
 
