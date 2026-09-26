@@ -16,6 +16,7 @@ TIME_RE = re.compile(r"(?<!\d)(?P<h>\d{1,2})[.:_-](?P<mi>\d{2})(?:[.:_-](?P<s>\d
 TIME4_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3])([0-5]\d)(?!\d)")
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?86[\s-]*)?(?P<mob>1[3-9]\d[\s-]?\d{4}[\s-]?\d{4})(?!\d)|(?<!\d)(?P<land>(?:0\d{2,3}-?)?\d{7,8})(?!\d)")
 COMPACT_DT_RE = re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})[_-]?(\d{2})(\d{2})(\d{2})?(?!\d)")
+MOBILE_RE = re.compile(r"1[3-9]\d{9}")   # 去掉分隔符后的标准手机号，用于「手机号优先」
 SPACED_DIGITS_RE = re.compile(r"\d(?:[\s-]\d){5,}")  # "1 3 8 0 0 1 3 8 0 0 0" 这类逐位带分隔的号码
 # 座机/热线常写成分组带空格：'010 6598 1234'、'400 610 1234'（示例号码为占位，非真实号码）
 DIGIT_GROUPS_RE = re.compile(r"(?<!\d)\d{3,4}(?:[\s-]+\d{3,4}){1,2}(?!\d)")
@@ -120,7 +121,9 @@ def parse_filename(path: str | Path, file_mtime: Optional[float] = None,
     phones = [ (m.group("mob") or m.group("land")).replace(" ", "").replace("-", "")
                for m in PHONE_RE.finditer(work) ]
     if phones:
-        out["phone"] = max(phones, key=len)
+        # 手机号优先于「最长」：带区号的座机能凑到 12 位，按长度会挑错主体
+        out["phone"] = next((p for p in phones if MOBILE_RE.fullmatch(p)),
+                            max(phones, key=len))
         work = PHONE_RE.sub(" ", work)
     else:
         # 没有手机号/座机时，退一步认特服号与热线：95xxx、10086/12306、400/800、00 国际直拨

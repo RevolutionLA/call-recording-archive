@@ -136,9 +136,11 @@ def refine_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0,
         jf.write_text("\n".join(json.dumps(j, ensure_ascii=False) for j in jobs), encoding="utf-8")
         log = open(tmp / "worker.log", "wb")
         print(f"批次 {i0//batch_calls+1}: {len(chunk)} 通 / {len(jobs)} 段 -> {py}", flush=True)
-        # measured ~3s/段 at batch 4; 10x that is the hang watchdog, and the pass
-        # still has to hand the GPU back by max_minutes
-        budget = min(180 + 30 * len(jobs), max(600, t0 + cap * 60 - time.time()))
+        # measured ~3s/段 at batch 4; 10x that is the hang watchdog. The floor is
+        # deliberately small: with max(600,...) a round that started its last
+        # batch 10s before the deadline was allowed to hold the GPU 600s over.
+        left = t0 + cap * 60 - time.time()
+        budget = min(180 + 30 * len(jobs), max(60, left))
         try:
             r = subprocess.run([py, str(HERE / "worker_qwen.py"), str(jf), str(of),
                                 qc["asr"], qc["aligner"], lang, str(items),

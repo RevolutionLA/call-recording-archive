@@ -154,20 +154,24 @@ _LOCKS = []
 
 
 def _acquire_lock(name: str) -> bool:
-    """Per-stage single-instance guard (Windows). Keeps the auto-ingest loop and
-    a manual run from double-processing the same backlog."""
+    """Per-stage single-instance guard. Keeps the auto-ingest loop and a manual
+    run from double-processing the same backlog. msvcrt on Windows, flock on
+    Linux/macOS -- otherwise an open-source user running auto_keepalive next to
+    a manual `run` gets no protection at all and both chew through the backlog."""
     import os
-    if os.name != "nt":
-        return True
-    import msvcrt
     Path("data").mkdir(exist_ok=True)
     f = open(f"data/lock_{name}.lock", "a+")
     try:
-        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         f.close()
         return False
-    _LOCKS.append(f)  # keep handle open for process lifetime
+    _LOCKS.append(f)  # keep handle open for process lifetime, that is what holds the lock
     return True
 
 
@@ -188,15 +192,17 @@ def main():
     args = ap.parse_args()
 
     cfg = config.load()
+    # rc=76：被另一个实例的锁挡住。守护脚本据此拉长重试间隔，而不是把它当成
+    # 「正常跑完」在 5 秒后原地空转
     if args.command in ("run", "refine", "summarize", "align", "graph") and not args.jobs:
         if not _acquire_lock(args.command):
             print(f"[{args.command}] 已有实例在跑（data/lock_{args.command}.lock 被占），本实例跳过")
-            return
+            raise SystemExit(76)
     # 单卡 6GB：转写、Qwen3 精修、Ollama 摘要任何一个都会把显存吃满，
     # 同跑不会报错只会一起变慢（实测精修被挤到 20 分钟零输出），所以三者互斥
     if args.command in ("run", "refine", "summarize") and not args.jobs and not _acquire_lock("gpu"):
         print(f"[{args.command}] GPU 正被 run/refine/summarize 中的另一阶段占用，本实例跳过")
-        return
+        raise SystemExit(76)
     fn = {
         "scan": cmd_scan, "refresh": cmd_refresh, "report": cmd_report, "run": cmd_run,
         "refine": cmd_refine, "align": cmd_align, "enroll-me": cmd_enroll_me,

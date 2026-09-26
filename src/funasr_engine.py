@@ -155,9 +155,6 @@ def cluster_speakers(embs: list, max_spk: int = 2, cut_dist: float = 0.62) -> li
     D = (D + D.T) / 2
     from scipy.cluster.hierarchy import linkage, fcluster
     from scipy.spatial.distance import squareform
-    D = 1.0 - X @ X.T
-    np.fill_diagonal(D, 0.0)
-    D = (D + D.T) / 2
     Z = linkage(squareform(D, checks=False), method="average")
     if len(idx) < 3:
         lab = np.zeros(len(idx), dtype=int)

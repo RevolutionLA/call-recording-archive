@@ -69,10 +69,12 @@ python pipeline.py scan        # 扫描入库（增量，可反复）
 python pipeline.py refresh     # 解析规则升级后回填 姓名/号码/时间（不重跑音频）
 python pipeline.py run         # 转写 + 声纹分离（断点续跑，可过夜）
 python pipeline.py align       # 自动识别「我」+ 打标签 + 归并联系人
-python pipeline.py summarize   # 本地 LLM 摘要（需 Ollama）
+python pipeline.py summarize   # 本地 LLM 摘要（Ollama 或任意 OpenAI 兼容端点）
 python pipeline.py graph       # 关系图谱与事件时间线
 python pipeline.py web         # 打开驾驶舱 http://localhost:8760
 ```
+
+想整夜无人值守：`scripts/auto_keepalive.bat` 会按 scan→run→refine→align→summarize→graph 循环续跑（日志 `logs/auto.log`）。每个阶段都有单实例锁，手动再开一个同名命令会被挡住并以 rc=76 退出，所以 `run_keepalive.bat`（只跑转写）和它是**二选一**，同开只会互相让位。Linux/macOS 用 `fcntl.flock`，同样互斥。
 
 想更准的字 + 字级时间戳？`python pipeline.py refine` 用 Qwen3-ASR + ForcedAligner 在已切分的语音段上「重听」一遍：中文专名、数字和方言口音（四川话/河南话）明显更稳，原文保留在 `segments.text_sv` 可回溯。它会用第二个 Python 环境的独立进程跑，内存不足时自动跳过本轮，也可排进自动摄取循环。
 
@@ -93,7 +95,7 @@ refine(可选)：Qwen3-ASR + ForcedAligner 逐段重听 → 更准文字 + 字�
    ▼
 align：跨通话质心聚类锁定「我」→ me/other/联系人标签（同人不同号自动并档）
    ▼
-summarize：Ollama /api/chat → 摘要/待办/事件/情绪
+summarize：本地 LLM（Ollama 原生 / OpenAI 兼容自动识别）→ 摘要/待办/事件/情绪
    ▼
 graph + voices + web 驾驶舱（FastAPI + 自绘 Canvas / ECharts，全本地）
 ```
@@ -104,7 +106,7 @@ graph + voices + web 驾驶舱（FastAPI + 自绘 Canvas / ECharts，全本地�
 |---|---|
 | ASR / VAD / 标点 / 声纹 | FunASR 1.1.9：SenseVoiceSmall、fsmn-vad、ct-punc、CAM++ |
 | 精修（可选） | Qwen3-ASR-1.7B + Qwen3-ForcedAligner-0.6B |
-| 摘要 LLM | Ollama（qwen3.5:2b 主力，思考模型用原生 `/api/chat`+`think:false`） |
+| 摘要 LLM | Ollama 或任意 OpenAI 兼容端点（LM Studio / vLLM）；思考模型走原生 `/api/chat`+`think:false` |
 | 存储 | SQLite（WAL 并发）；音频与数据永不入库到 git |
 | Web | FastAPI + 单页前端，ECharts/字体本地 vendor，零 CDN |
 | 图谱 | 自绘 Canvas 2D 力导向（无第三方图库） |
@@ -117,7 +119,7 @@ graph + voices + web 驾驶舱（FastAPI + 自绘 Canvas / ECharts，全本地�
 
 ## Roadmap
 
-- [x] 多 worker GPU 并行转写（`--workers N`，按显存/内存自行调节）
+- [x] 多 worker GPU 并行转写（`--workers N`：实测 2 worker 提速 2.3 倍，但只在显存/内存够的机器上成立，单张 6G 卡仍要 `--workers 1`）
 - [ ] 增量图谱与时间滑窗
 - [ ] 声纹冲突人工校正 UI
 - [ ] 打包为 pip 包 / 一键安装

@@ -57,7 +57,10 @@ service_filter:
 # ---------- 本地 LLM 摘要 ----------
 llm:
   base_url: "http://localhost:11434/v1"   # Ollama；LM Studio 用 http://localhost:1234/v1
-  api_key: "ollama"
+  # 端点类型自动识别：主机应答 /api/version 就走 Ollama 原生 /api/chat（思考模型
+  # 必须用它才拿得到 content，OpenAI 兼容路由会返回空），否则走 /chat/completions。
+  # api: "ollama"        # 要跳过探测就显式钉死：ollama | openai
+  api_key: "ollama"      # openai 路由上当 Bearer token 发出去；Ollama 忽略它
   model: "qwen2.5:3b"                      # 任意本地 chat 模型
   temperature: 0.3
   max_tokens: 1024

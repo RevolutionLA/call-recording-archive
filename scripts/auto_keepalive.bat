@@ -14,6 +14,6 @@ rem 精修：Qwen3-ASR 重听已切分段（内存不足时自动跳过本轮，
 "%PY%" pipeline.py align   >> logs\auto.log 2>&1
 "%PY%" pipeline.py summarize >> logs\auto.log 2>&1
 "%PY%" pipeline.py graph   >> logs\auto.log 2>&1
-echo [%date% %time%] cycle done, next sweep in 300s >> logs\auto_keepalive.log
+echo [%date% %time%] cycle done, next sweep in 300s >> logs\auto.log
 timeout /t 300 /nobreak >nul
 goto loop

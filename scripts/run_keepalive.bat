@@ -6,7 +6,9 @@ set "PY=C:\ProgramData\anaconda3\envs\sensevoice\python.exe"
 "%PY%" scripts\check_pending.py || goto done
 "%PY%" pipeline.py run --workers 1 >> logs\run_all.log 2>&1
 echo [%date% %time%] run exited (rc=%errorlevel%), re-check queue >> logs\run_keepalive.log
-rem rc>=75 means memory exhausted: wait longer for RAM to free up
+rem rc>=75 means either memory exhausted (75) or another instance holds the
+rem stage/GPU lock (76, e.g. auto_keepalive is mid-cycle): wait a minute instead
+rem of spinning every 5s on a stage that cannot start
 if errorlevel 75 (timeout /t 60 /nobreak >nul) else (timeout /t 5 /nobreak >nul)
 goto loop
 :done

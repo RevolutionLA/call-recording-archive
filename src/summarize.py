@@ -1,9 +1,10 @@
-"""Local LLM summarization/analysis via any OpenAI-compatible endpoint.
+"""Local LLM summarization/analysis via a local model server.
 
-Works with Ollama (http://localhost:11434/v1) or LM Studio
-(http://localhost:1234/v1). Produces per-call Chinese summary + structured
-JSON (topics, action items, entities, sentiment) used by the dashboard and
-the knowledge-graph builder.
+Ollama native (http://localhost:11434) and any OpenAI-compatible endpoint
+(LM Studio http://localhost:1234/v1, vLLM, llama.cpp server) both work; the
+flavour is auto-detected, or pinned with llm.api: ollama / openai. Produces
+per-call Chinese summary + structured JSON (topics, action items, entities,
+sentiment) used by the dashboard and the knowledge-graph builder.
 """
 from __future__ import annotations
 import json, sqlite3, time
@@ -25,30 +26,56 @@ PROMPT = """你是通话录音分析助手。下面是「我」与「{other}」�
 """
 
 
-def chat(cfg, prompt, retries=2):
-    llm = cfg["llm"]
-    # Ollama native /api/chat: the OpenAI-compat endpoint of thinking models
-    # (qwen3.5) fills reasoning tokens and returns empty content unless
-    # "think": false is passed, which only the native endpoint supports.
+_WHO = {}          # host -> "ollama" | "openai"，探测结果缓存，别每通都探
+
+
+def _target(llm):
+    """Return (kind, url). Ollama thinking models (qwen3.5) come back empty
+    through their OpenAI-compat route unless think:false is passed, and that
+    field only exists on the native /api/chat one — so prefer native whenever
+    the host answers /api/version. Pin with llm.api: ollama|openai to skip it."""
     root = llm["base_url"].rstrip("/")
     if root.endswith("/v1"):
         root = root[:-3]
-    url = root + "/api/chat"
+    kind = llm.get("api")
+    if kind not in ("ollama", "openai"):
+        if root not in _WHO:
+            try:
+                r = requests.get(root + "/api/version", timeout=3)
+                _WHO[root] = "ollama" if (r.ok and "version" in r.json()) else "openai"
+            except Exception:
+                pass        # 服务没起来：不写死判断，下一通重探并先按 Ollama 试
+        kind = _WHO.get(root, "ollama")
+    return kind, root + ("/api/chat" if kind == "ollama" else "/chat/completions")
+
+
+def chat(cfg, prompt, retries=2):
+    llm = cfg["llm"]
+    kind, url = _target(llm)
     payload = {
         "model": llm["model"],
         "stream": False,
-        "think": False,
-        "options": {
-            "temperature": llm.get("temperature", 0.3),
-            "num_predict": llm.get("max_tokens", 1024),
-        },
         "messages": [{"role": "user", "content": prompt}],
     }
+    if kind == "ollama":
+        payload["think"] = False
+        payload["options"] = {
+            "temperature": llm.get("temperature", 0.3),
+            "num_predict": llm.get("max_tokens", 1024),
+        }
+    else:
+        payload["temperature"] = llm.get("temperature", 0.3)
+        payload["max_tokens"] = llm.get("max_tokens", 1024)
+    headers = {"Authorization": f"Bearer {llm.get('api_key') or 'none'}"}
     for attempt in range(retries + 1):
         try:
-            r = requests.post(url, json=payload, timeout=llm.get("timeout", 180))
+            r = requests.post(url, json=payload, headers=headers,
+                              timeout=llm.get("timeout", 180))
             r.raise_for_status()
-            return r.json()["message"]["content"]
+            data = r.json()
+            if kind == "ollama":
+                return data["message"]["content"]
+            return data["choices"][0]["message"]["content"]
         except Exception as e:
             if attempt == retries:
                 raise
@@ -69,11 +96,15 @@ def _extract_json(text):
     return {"summary": text[:200], "raw": True}
 
 
-def transcript_text(conn, cid):
+def _name_map(conn):
+    return {c["id"]: c["name"] for c in conn.execute("SELECT id,name FROM contacts")}
+
+
+def transcript_text(conn, cid, names=None):
     rows = conn.execute(
-        "SELECT who, contact_id, start_ms, text_zh FROM segments WHERE call_id=? ORDER BY idx",
+        "SELECT who, contact_id, text_zh FROM segments WHERE call_id=? ORDER BY idx",
         (cid,)).fetchall()
-    names = {c["id"]: c["name"] for c in conn.execute("SELECT id,name FROM contacts")}
+    names = _name_map(conn) if names is None else names
     lines = []
     for r in rows:
         who = "我" if r["who"] == "me" else (names.get(r["contact_id"], "对方") if r["who"] == "other" else "某人")
@@ -94,13 +125,14 @@ def run_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0):
     # 单卡 GPU 要和 Qwen3 精修轮转：一次把 1400 通跑完会把精修饿掉好几个小时
     cap = float(cfg["llm"].get("max_minutes", 30)) * 60
     t0 = time.time()
+    names = _name_map(conn)      # 批量摘要时别每通重扫一遍 contacts
     done = fail = 0
     for i, r in enumerate(rows, 1):
         if time.time() - t0 > cap:
             print(f"  摘要让位：本轮已到 {cap/60:.0f} 分钟上限，"
                   f"剩余 {len(rows)-i+1} 通下一轮续跑", flush=True)
             break
-        transcript = transcript_text(conn, r["id"])
+        transcript = transcript_text(conn, r["id"], names)
         if not transcript.strip():
             conn.execute("UPDATE calls SET summary='(空)',status='analyzed',updated_at=? WHERE id=?",
                          (db.now(), r["id"]))

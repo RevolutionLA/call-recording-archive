@@ -65,8 +65,11 @@ def build(conn: sqlite3.Connection, cfg: dict, with_llm: bool = False):
     me_id = _node(conn, "me", None, "我")
     # person nodes from contacts
     contact_ids = {}
+    node_by_name = {}
     for c in conn.execute("SELECT id,name,n_calls FROM contacts"):
-        contact_ids[c["id"]] = _node(conn, "contact", c["id"], c["name"])
+        node = _node(conn, "contact", c["id"], c["name"])
+        contact_ids[c["id"]] = node
+        node_by_name.setdefault(c["name"], node)
     # talked edges with stats
     for r in conn.execute(
             "SELECT s.contact_id cid, COUNT(*) n, MIN(c.call_time) t0, MAX(c.call_time) t1,"
@@ -91,6 +94,7 @@ def build(conn: sqlite3.Connection, cfg: dict, with_llm: bool = False):
             continue
         others = c["contact_hint"] or c["phone"] or "对方"
         parts = {others}
+        hint_node = node_by_name.get(c["contact_hint"])
         for title in (a.get("events") or [])[:6]:
             title = str(title).strip()
             if not title:
@@ -103,13 +107,10 @@ def build(conn: sqlite3.Connection, cfg: dict, with_llm: bool = False):
             en = _node(conn, "event", ev_id, title)
             conn.execute("INSERT OR IGNORE INTO graph_edges(src_node,dst_node,kind,call_id,edge_time)"
                          " VALUES(?,?,?,?,?)", (me_id, en, "involves", c["id"], c["call_time"]))
-            if c["contact_hint"] and c["contact_hint"] in {v["name"] for v in
-                                                           conn.execute("SELECT name FROM contacts")}:
-                cid = conn.execute("SELECT id FROM contacts WHERE name=?",
-                                   (c["contact_hint"],)).fetchone()[0]
+            if hint_node:
                 conn.execute("INSERT OR IGNORE INTO graph_edges(src_node,dst_node,kind,call_id,edge_time)"
                              " VALUES(?,?,?,?,?)",
-                             (contact_ids.get(cid), en, "involves", c["id"], c["call_time"]))
+                             (hint_node, en, "involves", c["id"], c["call_time"]))
             n_ev += 1
         for tp in (a.get("topics") or [])[:6]:
             tn = _node(conn, "topic", None, str(tp))

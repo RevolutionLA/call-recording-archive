@@ -75,10 +75,8 @@ def export_all(conn: sqlite3.Connection, cfg: dict,
         while cands and used < per_contact_total:
             score, wav, s, e, text = cands.pop(0)
             clip_id += 1
-            tmp = out_dir / f"ref_{clip_id:02d}.tmp.wav"
-            _write_slice(wav, s, e, tmp, target_sr=24000)
             final = out_dir / f"ref_{clip_id:02d}.wav"
-            final.write_bytes(tmp.read_bytes()); tmp.unlink()
+            _write_slice(wav, s, e, final, target_sr=24000)
             (out_dir / f"ref_{clip_id:02d}.txt").write_text(text, encoding="utf-8")
             dur = (e - s) / 1000.0
             used += dur

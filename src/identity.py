@@ -212,28 +212,37 @@ def merge_same_person(conn, sim_thr: float = 0.8):
                 _merge(keep, r["id"])
 
     # pass 2: same voiceprint, different numbers
+    # 一次性预取（存在性 / n_calls / 有无真名），避免每对联系人都回表查 4 次
     cents = {c["id"]: _contact_embedding(conn, c["id"]) for c in
              conn.execute("SELECT id FROM contacts")}
-    ids = [i for i, v in cents.items() if v is not None]
+    rows = {c["id"]: c for c in
+            conn.execute("SELECT id,name,phone,n_calls FROM contacts")}
+
+    def _named(rec):
+        return bool(rec and rec["name"] and rec["name"] != rec["phone"])
+
+    ids = sorted(i for i, v in cents.items() if v is not None and i in rows)
     for a in ids:
-        if conn.execute("SELECT 1 FROM contacts WHERE id=?", (a,)).fetchone() is None:
+        if a not in rows:
             continue
         for b in ids:
-            if b <= a:
-                continue
-            if conn.execute("SELECT 1 FROM contacts WHERE id=?", (b,)).fetchone() is None:
+            if b <= a or b not in rows:
                 continue
             if float(np.dot(cents[a], cents[b])) < sim_thr:
                 continue
-            na = conn.execute("SELECT n_calls FROM contacts WHERE id=?", (a,)).fetchone()["n_calls"] or 0
-            nb = conn.execute("SELECT n_calls FROM contacts WHERE id=?", (b,)).fetchone()["n_calls"] or 0
-            va, vb = _has_real_name(a), _has_real_name(b)
+            va, vb = _named(rows[a]), _named(rows[b])
+            na = rows[a]["n_calls"] or 0
+            nb = rows[b]["n_calls"] or 0
             # a profile with a real name beats a bare number; otherwise more traffic wins
             if va != vb:
                 keep, drop = (a, b) if va else (b, a)
             else:
                 keep, drop = (a, b) if na >= nb else (b, a)
             _merge(keep, drop)
+            rows.pop(drop, None)
+            if keep in cents:
+                # 并档后声纹均值变了，不重算会让后面的比较用旧向量
+                cents[keep] = _contact_embedding(conn, keep)
             if drop == a:
                 break
 
@@ -261,6 +270,22 @@ def merge_same_person(conn, sim_thr: float = 0.8):
 
 def resolve_contacts(conn, match_thr: float = 0.55, seed_quality: float = 0.6):
     """Map 'other' segments to contacts by voiceprint; grow the library."""
+    #  contacts 只有几百行，但段有成千上万条：把 name/phone→id 和每通的文件名
+    #    线索一次性拿进内存，别在段循环里逐条回表
+    by_name, by_phone, name_of = {}, {}, {}
+    for c in conn.execute("SELECT id,name,phone FROM contacts"):
+        by_name.setdefault(c["name"], c["id"])
+        name_of[c["id"]] = c["name"]
+        if c["phone"]:
+            by_phone.setdefault(c["phone"], c["id"])
+
+    def _remember(cid, name, phone):
+        by_name[name] = cid
+        name_of[cid] = name
+        if phone:
+            by_phone.setdefault(phone, cid)
+        return cid
+
     # 1) make sure filename hints have contact rows -- but never a second row
     #    for a phone we already have (that churn fought the same-person merge)
     for r in conn.execute(
@@ -268,23 +293,27 @@ def resolve_contacts(conn, match_thr: float = 0.55, seed_quality: float = 0.6):
             "WHERE contact_hint IS NOT NULL OR phone IS NOT NULL"):
         label = r["contact_hint"] or r["phone"]
         if r["phone"]:
-            ex = conn.execute("SELECT id,name FROM contacts WHERE phone=?",
-                              (r["phone"],)).fetchone()
-            if ex:
-                if label != r["phone"] and ex["name"] == r["phone"] and \
-                        conn.execute("SELECT 1 FROM contacts WHERE name=?",
-                                     (label,)).fetchone() is None:
+            ex_id = by_phone.get(r["phone"])
+            if ex_id is not None:
+                if label != r["phone"] and name_of.get(ex_id) == r["phone"] and label not in by_name:
                     conn.execute("UPDATE contacts SET name=?,updated_at=? WHERE id=?",
-                                 (label, db.now(), ex["id"]))
+                                 (label, db.now(), ex_id))
+                    by_name.pop(name_of[ex_id], None)
+                    _remember(ex_id, label, r["phone"])
                 continue
-        conn.execute("INSERT OR IGNORE INTO contacts(name,phone,updated_at) VALUES(?,?,?)",
-                     (label, r["phone"], db.now()))
+        if label in by_name:      # UNIQUE(name) 已存在，INSERT OR IGNORE 本来就是空操作
+            continue
+        cur = conn.execute("INSERT INTO contacts(name,phone,updated_at) VALUES(?,?,?)",
+                           (label, r["phone"], db.now()))
+        _remember(cur.lastrowid, label, r["phone"])
     conn.commit()
 
-    contacts = conn.execute("SELECT id,name,phone FROM contacts").fetchall()
-    cents = {}
-    for c in contacts:
-        cents[c["id"]] = _contact_embedding(conn, c["id"])
+    cents = {cid: _contact_embedding(conn, cid) for cid in name_of}
+    ids = [cid for cid, v in cents.items() if v is not None]
+    mat = np.vstack([cents[cid] for cid in ids]) if ids else np.zeros((0, 1))
+
+    hints = {r["id"]: (r["contact_hint"], r["phone"]) for r in conn.execute(
+        "SELECT id, contact_hint, phone FROM calls")}
 
     segs = conn.execute(
         "SELECT id, call_id, embedding FROM segments "
@@ -297,46 +326,45 @@ def resolve_contacts(conn, match_thr: float = 0.55, seed_quality: float = 0.6):
             conn.execute("UPDATE segments SET who='me' WHERE id=?", (s["id"],))
             continue
         best, best_sim = None, -1
-        for cid, cv in cents.items():
-            if cv is None:
-                continue
-            sim = float(np.dot(v, cv))
-            if sim > best_sim:
-                best, best_sim = cid, sim
-        call = conn.execute("SELECT contact_hint, phone FROM calls WHERE id=?",
-                            (s["call_id"],)).fetchone()
-        hint = call["contact_hint"] or call["phone"]
+        if len(ids):
+            sims = mat @ v
+            j = int(np.argmax(sims))
+            best, best_sim = ids[j], float(sims[j])
+        call_hint, call_phone = hints.get(s["call_id"], (None, None))
+        hint = call_hint or call_phone
         if best is not None and best_sim >= match_thr:
             conn.execute("UPDATE segments SET contact_id=?,contact_conf=? WHERE id=?",
                          (best, best_sim, s["id"]))
             assigned += 1
             # filename hint says another (known) contact -> trust text over voice
-            if hint:
-                row = conn.execute("SELECT id FROM contacts WHERE name=?", (hint,)).fetchone()
-                if row and row["id"] != best:
-                    conn.execute("UPDATE segments SET contact_id=?,contact_conf=? WHERE id=?",
-                                 (row["id"], 0.95, s["id"]))
+            hid = by_name.get(hint) if hint else None
+            if hid is not None and hid != best:
+                conn.execute("UPDATE segments SET contact_id=?,contact_conf=? WHERE id=?",
+                             (hid, 0.95, s["id"]))
         elif hint:
-            row = conn.execute("SELECT id FROM contacts WHERE name=?", (hint,)).fetchone()
-            if row:
-                cid = row["id"]
-            elif call["phone"] and (row := conn.execute(
-                    "SELECT id FROM contacts WHERE phone=?", (call["phone"],)).fetchone()):
-                cid = row["id"]
-            else:
+            cid = by_name.get(hint)
+            if cid is None:
+                cid = by_phone.get(call_phone) if call_phone else None
+            if cid is None:
                 cur = conn.execute("INSERT INTO contacts(name,phone,updated_at) VALUES(?,?,?)",
-                                   (hint, call["phone"], db.now()))
-                cid = cur.lastrowid
+                                   (hint, call_phone, db.now()))
+                cid = _remember(cur.lastrowid, hint, call_phone)
             conn.execute("UPDATE segments SET contact_id=?,contact_conf=? WHERE id=?",
                          (cid, 0.9, s["id"]))
-            cents.setdefault(cid, v)
+            if cid not in cents:
+                cents[cid] = v
+                ids.append(cid)
+                mat = np.vstack([mat, v]) if len(ids) > 1 else v.reshape(1, -1)
             assigned += 1
         else:
             # brand new voice, no hint -> create 声纹联系人
+            name = f"未知声纹{int(s['id'])}"
             cur = conn.execute("INSERT INTO contacts(name,note,updated_at) VALUES(?,?,?)",
-                               (f"未知声纹{int(s['id'])}", "由声纹聚类自动创建", db.now()))
-            cid = cur.lastrowid
+                               (name, "由声纹聚类自动创建", db.now()))
+            cid = _remember(cur.lastrowid, name, None)
             cents[cid] = v
+            ids.append(cid)
+            mat = np.vstack([mat, v]) if len(ids) > 1 else v.reshape(1, -1)
             conn.execute("UPDATE segments SET contact_id=?,contact_conf=? WHERE id=?",
                          (cid, 0.7, s["id"]))
             conn.execute("INSERT INTO voiceprints(contact_id,embedding,source_call_id,"
