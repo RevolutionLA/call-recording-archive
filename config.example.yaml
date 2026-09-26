@@ -75,6 +75,9 @@ qwen:
   min_avail_gb: 6         # 可提交内存低于此值本轮跳过（两模型加载约需 5GB）
   batch_calls: 60         # 每批通话数（每批加载一次模型，越大越省）
   max_minutes: 45         # 每轮精修限时：到点让位给摘要/图谱，自动循环下一轮续跑
+  batch_items: 4          # worker 一次喂模型的条数（6G 显存的实测上限，调大反而变慢）
+  align: true             # 跑 ForcedAligner 出字级时间戳（成本约占一半，false 则只换文本）
+  chunk_sec: 20           # 单段超过此时长自动切片重听（超长段会让模型开放式解码卡住）
 
 # ---------- Web 驾驶舱 ----------
 web:

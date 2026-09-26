@@ -91,6 +91,12 @@ def refine_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0,
     qc = _qwen_cfg(cfg)
     py = worker_python(cfg)
     lang = q.get("language", "Chinese")
+    items = int(q.get("batch_items") or 4)     # worker 内部一次喂给模型的段数
+    align = bool(q.get("align", True))         # False = 只换文本，保留 VAD 时间戳，省一半时间
+    chunk_sec = float(q.get("chunk_sec", 20))  # 超长约 80s 的段会让模型开放式解码不停
+    # 每轮限时：整批 1900+ 通要十几小时，全占着 GPU 会让摘要饿死，
+    # 到点就让出锁，自动循环下一轮续跑（asr_outputs 就是断点标记）
+    cap = float(q.get("max_minutes", 45))
     t0 = time.time()
     done = 0
     for i0 in range(0, len(rows), batch_calls):
@@ -98,9 +104,6 @@ def refine_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0,
         if avail < need:      # the backlog pass must not fight WSL/Ollama for the page file
             print(f"精修中止：剩余批次待下轮，可提交内存 {avail:.1f}GB < {need:.0f}GB", flush=True)
             return
-        # 每轮限时：精修一整批 1900+ 通要十几小时，全占着 GPU 会让摘要饿死，
-        # 到点就让出锁，自动循环下一轮继续续跑（asr_outputs 是断点标记）
-        cap = float(q.get("max_minutes", 45))
         if time.time() - t0 > cap * 60:
             print(f"精修让位：本轮已到 {cap:.0f} 分钟上限，剩余待下轮", flush=True)
             return
@@ -125,16 +128,17 @@ def refine_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0,
         jf.write_text("\n".join(json.dumps(j, ensure_ascii=False) for j in jobs), encoding="utf-8")
         log = open(tmp / "worker.log", "wb")
         print(f"批次 {i0//batch_calls+1}: {len(chunk)} 通 / {len(jobs)} 段 -> {py}", flush=True)
-        # measured ~3s/segment; 10x that is the hang watchdog, so a swapped-out worker
-        # cannot freeze the whole keepalive cycle
-        budget = 180 + 30 * len(jobs)
+        # measured ~3s/段 at batch 4; 10x that is the hang watchdog, and the pass
+        # still has to hand the GPU back by max_minutes
+        budget = min(180 + 30 * len(jobs), max(600, t0 + cap * 60 - time.time()))
         try:
             r = subprocess.run([py, str(HERE / "worker_qwen.py"), str(jf), str(of),
-                                qc["asr"], qc["aligner"], lang],
+                                qc["asr"], qc["aligner"], lang, str(items),
+                                "1" if align else "0", str(int(chunk_sec))],
                                stdout=log, stderr=subprocess.STDOUT, timeout=budget)
             rc = r.returncode
         except subprocess.TimeoutExpired:
-            rc = f"超时终止(>{budget}s)"
+            rc = f"超时终止(>{budget:.0f}s)"
         log.close()
         lf = tmp / "worker.log"
         tail = ""
