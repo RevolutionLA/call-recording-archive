@@ -94,8 +94,18 @@ def refine_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0,
     t0 = time.time()
     done = 0
     for i0 in range(0, len(rows), batch_calls):
+        avail = free_commit_gb()
+        if avail < need:      # the backlog pass must not fight WSL/Ollama for the page file
+            print(f"精修中止：剩余批次待下轮，可提交内存 {avail:.1f}GB < {need:.0f}GB", flush=True)
+            return
+        # 每轮限时：精修一整批 1900+ 通要十几小时，全占着 GPU 会让摘要饿死，
+        # 到点就让出锁，自动循环下一轮继续续跑（asr_outputs 是断点标记）
+        cap = float(q.get("max_minutes", 45))
+        if time.time() - t0 > cap * 60:
+            print(f"精修让位：本轮已到 {cap:.0f} 分钟上限，剩余待下轮", flush=True)
+            return
         chunk = rows[i0:i0 + batch_calls]
-        jobs, order = [], []
+        jobs, order, want = [], [], {}
         for c in chunk:
             segs = conn.execute(
                 "SELECT id, start_ms, end_ms FROM segments WHERE call_id=? ORDER BY idx",
@@ -104,6 +114,7 @@ def refine_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0,
                 continue
             ctx = " ".join(x for x in (c["contact_hint"], c["phone"]) if x)[:80]
             order.append(c["id"])
+            want[c["id"]] = len(segs)
             for s in segs:
                 jobs.append({"call_id": c["id"], "seg_id": s["id"], "wav": c["wav_path"],
                              "start_ms": s["start_ms"], "end_ms": s["end_ms"], "context": ctx})
@@ -114,32 +125,56 @@ def refine_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0,
         jf.write_text("\n".join(json.dumps(j, ensure_ascii=False) for j in jobs), encoding="utf-8")
         log = open(tmp / "worker.log", "wb")
         print(f"批次 {i0//batch_calls+1}: {len(chunk)} 通 / {len(jobs)} 段 -> {py}", flush=True)
-        r = subprocess.run([py, str(HERE / "worker_qwen.py"), str(jf), str(of),
-                            qc["asr"], qc["aligner"], lang],
-                           stdout=log, stderr=subprocess.STDOUT)
+        # measured ~3s/segment; 10x that is the hang watchdog, so a swapped-out worker
+        # cannot freeze the whole keepalive cycle
+        budget = 180 + 30 * len(jobs)
+        try:
+            r = subprocess.run([py, str(HERE / "worker_qwen.py"), str(jf), str(of),
+                                qc["asr"], qc["aligner"], lang],
+                               stdout=log, stderr=subprocess.STDOUT, timeout=budget)
+            rc = r.returncode
+        except subprocess.TimeoutExpired:
+            rc = f"超时终止(>{budget}s)"
         log.close()
+        lf = tmp / "worker.log"
+        tail = ""
+        if lf.exists():
+            tail = lf.read_text(encoding="utf-8", errors="replace")[-1200:]
         if not of.exists():
-            tail = ""
-            lf = tmp / "worker.log"
-            if lf.exists():
-                tail = lf.read_text(encoding="utf-8", errors="replace")[-600:]
-            print(f"  worker 失败 exit={r.returncode}，见 {lf}\n{tail}", flush=True)
-            return
-        per_call = {}
-        for line in of.read_text(encoding="utf-8").splitlines():
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not d.get("error"):
-                per_call.setdefault(d["call_id"], []).append(d)
-        for cid in order:
-            done += _fold_call(conn, cid, per_call.get(cid, []), qc["asr"])
-        conn.commit()
+            print(f"  worker 未产出结果 exit={rc}，日志尾部：\n{tail}", flush=True)
+        else:
+            per_call, failed = {}, 0
+            for line in of.read_text(encoding="utf-8").splitlines():
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if d.get("error"):
+                    failed += 1
+                    continue
+                # a retried segment wins over the earlier row
+                bucket = per_call.setdefault(d["call_id"], {})
+                bucket[d["seg_id"]] = d
+            skipped = []
+            for cid in order:
+                got = list(per_call.get(cid, {}).values())
+                if len(got) < want[cid]:
+                    skipped.append((cid, len(got), want[cid]))
+                    continue          # leave it pending: next round re-listens the whole call
+                done += _fold_call(conn, cid, got, qc["asr"])
+            conn.commit()
+            print(f"  本批完成 {done} 通（段失败 {failed}，段数不齐跳过 "
+                  f"{len(skipped)}：{skipped[:5]}），exit={rc}", flush=True)
         import shutil
-        shutil.rmtree(tmp, ignore_errors=True)   # keep %TEMP% from filling with job dirs
-        print(f"  已精修 {done} 通，累计 {time.time()-t0:.0f}s，"
+        keep = Path("logs/qwen_worker.log")   # batch-level timings live here, not in %TEMP%
+        if lf.exists():
+            keep.write_text(f"=== batch {i0//batch_calls+1} calls={len(chunk)} segs={len(jobs)} "
+                            f"rc={rc}\n" + tail, encoding="utf-8")
+        shutil.rmtree(tmp, ignore_errors=True)
+        print(f"  累计精修 {done} 通 / {time.time()-t0:.0f}s，"
               f"可用内存 {free_commit_gb():.1f}GB", flush=True)
+        if rc != 0:
+            return
 
 
 def _fold_call(conn, cid: int, results: list, model_path: str) -> int:

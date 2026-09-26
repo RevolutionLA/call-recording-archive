@@ -178,6 +178,11 @@ def main():
         if not _acquire_lock(args.command):
             print(f"[{args.command}] 已有实例在跑（data/lock_{args.command}.lock 被占），本实例跳过")
             return
+    # 单卡 6GB：转写、Qwen3 精修、Ollama 摘要任何一个都会把显存吃满，
+    # 同跑不会报错只会一起变慢（实测精修被挤到 20 分钟零输出），所以三者互斥
+    if args.command in ("run", "refine", "summarize") and not args.jobs and not _acquire_lock("gpu"):
+        print(f"[{args.command}] GPU 正被 run/refine/summarize 中的另一阶段占用，本实例跳过")
+        return
     fn = {
         "scan": cmd_scan, "report": cmd_report, "run": cmd_run, "refine": cmd_refine,
         "align": cmd_align, "enroll-me": cmd_enroll_me, "summarize": cmd_summarize,
