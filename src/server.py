@@ -30,11 +30,18 @@ def dict_rows(rows):
     return [dict(r) for r in rows]
 
 
+_schema_ready = False
+
+
 def init_conn():
+    global _schema_ready
     c = conn()
     c.row_factory = sqlite3.Row
-    c.executescript(dbm.SCHEMA)
-    dbm.migrate(c)
+    if not _schema_ready:              # one-time DDL/migration per process, not per request
+        c.executescript(dbm.SCHEMA)
+        dbm.migrate(c)
+        c.commit()
+        _schema_ready = True
     return c
 
 
@@ -288,11 +295,14 @@ def list_calls(q: str = "", contact: str = "", who: str = "", date_from: str = "
         f"SELECT COUNT(DISTINCT c.id) FROM calls c LEFT JOIN segments s ON s.call_id=c.id"
         f" LEFT JOIN contacts ct ON ct.id=s.contact_id WHERE {where}", p).fetchone()[0]
     rows = c.execute(
-        f"SELECT DISTINCT c.id, c.filename, c.contact_hint, c.phone, c.call_time,"
-        f" c.duration_sec, c.status, c.summary, ct.name contact FROM calls c"
+        f"SELECT c.id, c.filename, c.contact_hint, c.phone, c.call_time,"
+        f" c.duration_sec, c.status, c.summary,"
+        f" (SELECT GROUP_CONCAT(DISTINCT ct2.name) FROM segments s2"
+        f"  JOIN contacts ct2 ON ct2.id=s2.contact_id"
+        f"  WHERE s2.call_id=c.id AND s2.who='other') contact FROM calls c"
         f" LEFT JOIN segments s ON s.call_id=c.id"
         f" LEFT JOIN contacts ct ON ct.id=s.contact_id"
-        f" WHERE {where} ORDER BY c.call_time DESC, c.id DESC LIMIT ? OFFSET ?",
+        f" WHERE {where} GROUP BY c.id ORDER BY c.call_time DESC, c.id DESC LIMIT ? OFFSET ?",
         (*p, size, (page - 1) * size)).fetchall()
     return {"total": total, "page": page, "size": size, "items": dict_rows(rows)}
 
