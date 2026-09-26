@@ -33,10 +33,14 @@ def _target(llm):
     """Return (kind, url). Ollama thinking models (qwen3.5) come back empty
     through their OpenAI-compat route unless think:false is passed, and that
     field only exists on the native /api/chat one — so prefer native whenever
-    the host answers /api/version. Pin with llm.api: ollama|openai to skip it."""
-    root = llm["base_url"].rstrip("/")
-    if root.endswith("/v1"):
-        root = root[:-3]
+    the host answers /api/version. Pin with llm.api: ollama|openai to skip it.
+
+    OpenAI-compatible servers (LM Studio / vLLM / llama.cpp) mount their API
+    UNDER the configured /v1 prefix, so the openai branch keeps it; only the
+    Ollama native branch strips /v1 off before appending /api/chat."""
+    raw = llm["base_url"].rstrip("/")
+    root = raw[:-3] if raw.endswith("/v1") else raw   # 探测 / Ollama 原生用（去掉 /v1）
+    guess = "openai" if raw.endswith("/v1") else "ollama"
     kind = llm.get("api")
     if kind not in ("ollama", "openai"):
         if root not in _WHO:
@@ -44,9 +48,14 @@ def _target(llm):
                 r = requests.get(root + "/api/version", timeout=3)
                 _WHO[root] = "ollama" if (r.ok and "version" in r.json()) else "openai"
             except Exception:
-                pass        # 服务没起来：不写死判断，下一通重探并先按 Ollama 试
-        kind = _WHO.get(root, "ollama")
-    return kind, root + ("/api/chat" if kind == "ollama" else "/chat/completions")
+                # 服务没应答 ≠ 服务不是 Ollama。本机默认就是 …:11434/v1，冷启动时
+                # 把猜的结果写进缓存，会把整轮摘要锁到 OpenAI 路由上，而思考模型在
+                # 那条路上返回空正文 —— 所以这里只猜、不记，下一通仍然重探
+                pass
+        kind = _WHO.get(root, guess)
+    if kind == "ollama":
+        return kind, root + "/api/chat"
+    return kind, raw + "/chat/completions"           # OpenAI 兼容挂在 /v1 下面，别剥
 
 
 def chat(cfg, prompt, retries=2):

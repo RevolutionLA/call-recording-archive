@@ -114,6 +114,8 @@ def main():
 
     # 按「块」组批而不是按「段」：一个 80s 段会切成 5 块，若按段凑 4 条就会一次喂
     # 20 块且全部 padding 到最长，实测从 4s/段恶化到 36s/段
+    # 组批时只记坐标不读音频：整批 30 通的 PCM 一次进内存会和模型抢页面文件
+    # （实测这台机器可用提交内存只有十几 GB），轮到哪一批才读哪一批
     groups, cur_jobs, cur_plan = [], [], []
     for j in jobs:
         chunks = split_ms(j["start_ms"], j["end_ms"], chunk_ms)
@@ -123,15 +125,14 @@ def main():
         bi = len(cur_jobs)
         cur_jobs.append(j)
         for s, e in chunks:
-            a, sr = read_slice(j["wav"], s, e)
-            cur_plan.append((bi, (a, sr), s))
+            cur_plan.append((bi, s, e))
     if cur_plan:
         groups.append((cur_jobs, cur_plan))
 
     with open(out_file, "w", encoding="utf-8") as fo:
         t0, n = time.time(), 0
         for batch, plan in groups:
-            audios = [p[1] for p in plan]
+            audios = [read_slice(batch[bi]["wav"], s, e) for bi, s, e in plan]
             try:
                 res = model.transcribe(audio=audios if len(audios) > 1 else audios[0],
                                        context=[batch[p[0]].get("context", "") for p in plan],
@@ -146,7 +147,7 @@ def main():
                 n += len(batch)
                 continue
             merged = {bi: {"parts": [], "words": [], "lang": ""} for bi in range(len(batch))}
-            for (bi, _, pstart), r in zip(plan, res):
+            for (bi, pstart, _e), r in zip(plan, res):
                 m = merged[bi]
                 if r.text:
                     m["parts"].append(r.text.strip())
