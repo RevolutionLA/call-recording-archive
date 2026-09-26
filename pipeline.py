@@ -26,10 +26,20 @@ def get_conn(cfg):
 
 def cmd_scan(cfg, args):
     conn = get_conn(cfg)
-    if not cfg.get("recordings_dir"):
-        sys.exit("请先在 config.yaml 填写 recordings_dir（你放录音的文件夹）")
-    r = scan_mod.scan(conn, cfg["recordings_dir"], cfg["audio_extensions"],
-                      cfg.get("filename_patterns"), cfg.get("exclude_dirs"))
+    target = args.path or cfg.get("recordings_dir")
+    if not target:
+        sys.exit("请先在 config.yaml 填写 recordings_dir，或 scan --path <录音目录>")
+    root = str(Path(target).resolve())
+    row = conn.execute("SELECT id FROM sources WHERE path=?", (root,)).fetchone()
+    if not row:
+        conn.execute("INSERT INTO sources(name,path,created_at) VALUES(?,?,?)",
+                     (Path(root).name or root, root, db.now()))
+        row = conn.execute("SELECT id FROM sources WHERE path=?", (root,)).fetchone()
+    conn.execute("UPDATE calls SET source_id=? WHERE source_id IS NULL", (row["id"],))
+    conn.commit()
+    r = scan_mod.scan(conn, root, cfg["audio_extensions"],
+                      cfg.get("filename_patterns"), cfg.get("exclude_dirs"),
+                      source_id=row["id"])
     print(f"扫描完成：新增 {r['added']}，更新 {r['updated']}，未变 {r['unchanged']}")
     print("状态分布:", scan_mod.stats(conn))
 
@@ -122,6 +132,7 @@ def main():
     ap.add_argument("command", choices=["scan", "report", "run", "refine", "align",
                                         "enroll-me", "summarize", "voices", "graph", "web"])
     ap.add_argument("--limit", type=int, default=0, help="最多处理 N 通（0=全部）")
+    ap.add_argument("--path", default="", help="scan 用：库名称（默认按 config 的 recordings_dir 建「本机」库）")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("wav", nargs="?", help="enroll-me 用：16k 单声道 wav 路径")
     ap.add_argument("start", nargs="?", type=int, default=0)

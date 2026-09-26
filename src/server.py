@@ -34,7 +34,7 @@ def init_conn():
     c = conn()
     c.row_factory = sqlite3.Row
     c.executescript(dbm.SCHEMA)
-    c.commit()
+    dbm.migrate(c)
     return c
 
 
@@ -88,18 +88,21 @@ def heatmap():
 
 @app.get("/api/stats/contacts")
 def stats_contacts(limit: int = 30, since: str = "", until: str = ""):
+    """Top contacts by call attribution on the calls table itself
+    (filename hint/phone), so it covers every scanned recording,
+    not only voiceprint-aligned segments."""
     c = init_conn()
-    where, params = "s.who='other' AND s.contact_id IS NOT NULL", []
+    w, params = ["1=1"], []
     if since:
-        where += " AND c.call_time>=?"; params.append(since)
+        w.append("call_time>=?"); params.append(since)
     if until:
-        where += " AND c.call_time<=?"; params.append(until)
+        w.append("call_time<=?"); params.append(until)
     rows = c.execute(
-        f"SELECT ct.id, ct.name, COUNT(DISTINCT c.id) calls,"
-        f" ROUND(SUM(DISTINCT c.duration_sec)/60.0,1) minutes,"
-        f" MIN(c.call_time) first, MAX(c.call_time) last"
-        f" FROM segments s JOIN calls c ON c.id=s.call_id JOIN contacts ct ON ct.id=s.contact_id"
-        f" WHERE {where} GROUP BY ct.id ORDER BY calls DESC LIMIT ?", (*params, limit)).fetchall()
+        f"SELECT COALESCE(NULLIF(contact_hint,''), NULLIF(phone,''), '未知') name,"
+        f" COUNT(*) calls, ROUND(SUM(COALESCE(duration_sec,0))/60.0,1) minutes,"
+        f" MIN(call_time) first, MAX(call_time) last"
+        f" FROM calls WHERE {' AND '.join(w)} GROUP BY name"
+        f" ORDER BY calls DESC LIMIT ?", (*params, limit)).fetchall()
     return dict_rows(rows)
 
 
@@ -129,10 +132,139 @@ def duration_hist():
     return [{"label": l, "count": h} for l, h in zip(labels, hist)]
 
 
+# ---------- recording sources (外部录音库) ----------
+_scan_job = {"running": False, "source_id": None, "message": ""}
+
+
+def _seed_default_source(c):
+    if c.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0:
+        root = str((ROOT / cfg()["recordings_dir"]).resolve())
+        c.execute("INSERT INTO sources(name,path,created_at) VALUES(?,?,?)",
+                  ("本机", root, dbm.now()))
+        c.execute("UPDATE calls SET source_id=(SELECT id FROM sources WHERE name='本机') "
+                  "WHERE source_id IS NULL")
+        c.commit()
+
+
+@app.get("/api/sources")
+def list_sources():
+    c = init_conn()
+    _seed_default_source(c)
+    rows = c.execute(
+        "SELECT s.*, (SELECT COUNT(*) FROM calls x WHERE x.source_id=s.id) n_calls,"
+        " (SELECT ROUND(SUM(COALESCE(x.duration_sec,0))/3600.0,2) FROM calls x WHERE x.source_id=s.id) hours,"
+        " (SELECT COUNT(*) FROM calls x WHERE x.source_id=s.id AND x.status IN ('transcribed','analyzed')) n_done,"
+        " (SELECT COUNT(*) FROM calls x WHERE x.source_id=s.id AND x.status='error') n_err,"
+        " (SELECT COUNT(*) FROM calls x WHERE x.source_id=s.id AND x.duration_sec IS NULL) n_nodur"
+        " FROM sources s ORDER BY s.id").fetchall()
+    return dict_rows(rows)
+
+
+@app.post("/api/sources")
+def add_source(payload: dict):
+    name = (payload.get("name") or "").strip()
+    path = (payload.get("path") or "").strip().strip('"')
+    if not name or not path:
+        raise HTTPException(400, "需要 name 和 path")
+    p = Path(path)
+    if not p.exists():
+        raise HTTPException(400, f"路径不存在或不可访问: {path}（NAS 请先挂载）")
+    c = init_conn()
+    try:
+        c.execute("INSERT INTO sources(name,path,enabled,note,created_at) VALUES(?,?,?,?,?)",
+                  (name, str(p.resolve()), int(payload.get("enabled", 1)),
+                   payload.get("note", ""), dbm.now()))
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(400, f"已存在同名或同路径的库: {e}")
+    c.commit()
+    return {"ok": True}
+
+
+@app.put("/api/sources/{sid}")
+def update_source(sid: int, payload: dict):
+    c = init_conn()
+    row = c.execute("SELECT * FROM sources WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise HTTPException(404)
+    fields, params = [], []
+    for k in ("name", "path", "note"):
+        if payload.get(k) is not None:
+            fields.append(f"{k}=?"); params.append(str(payload[k]).strip().strip('"'))
+    if payload.get("enabled") is not None:
+        fields.append("enabled=?"); params.append(1 if payload["enabled"] else 0)
+    if fields:
+        c.execute(f"UPDATE sources SET {','.join(fields)} WHERE id=?", (*params, sid))
+        c.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/sources/{sid}")
+def delete_source(sid: int, unlink: int = 0):
+    c = init_conn()
+    if not unlink:
+        n = c.execute("SELECT COUNT(*) FROM calls WHERE source_id=?", (sid,)).fetchone()[0]
+        if n:
+            raise HTTPException(400, f"该库下还有 {n} 通通话。加 ?unlink=1 仅移除库记录（通话保留但不再归属）")
+    c.execute("UPDATE calls SET source_id=NULL WHERE source_id=?", (sid,))
+    c.execute("DELETE FROM sources WHERE id=?", (sid,))
+    c.commit()
+    return {"ok": True}
+
+
+def _scan_thread(sid: int, path: str):
+    import threading
+    import traceback
+    from . import scan as scanmod
+    _scan_job.update(running=True, source_id=sid, message="扫描中…")
+    try:
+        a = cfg()
+        c = sqlite3.connect(cfg()["db_path"])
+        c.row_factory = sqlite3.Row
+        res = scanmod.scan(c, path, a["audio_extensions"], a.get("filename_patterns"),
+                           a.get("exclude_dirs"), source_id=sid)
+        c.execute("UPDATE sources SET last_scan_at=?, last_result=? WHERE id=?",
+                  (dbm.now(), json.dumps(res, ensure_ascii=False), sid))
+        c.commit(); c.close()
+        _scan_job.update(running=False,
+                         message=f"新增 {res['added']}，更新 {res['updated']}，未变 {res['unchanged']}")
+    except Exception as e:
+        traceback.print_exc()
+        _scan_job.update(running=False, message=f"扫描失败: {e}")
+
+
+@app.post("/api/sources/{sid}/scan")
+def scan_source(sid: int):
+    if _scan_job["running"]:
+        raise HTTPException(409, f"已有扫描任务在跑（库 #{_scan_job['source_id']}）：{_scan_job['message']}")
+    c = init_conn()
+    row = c.execute("SELECT * FROM sources WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise HTTPException(404)
+    if not Path(row["path"]).exists():
+        raise HTTPException(400, f"路径当前不可访问: {row['path']}（NAS 是否已挂载？）")
+    import threading
+    threading.Thread(target=_scan_thread, args=(sid, row["path"]), daemon=True).start()
+    return {"ok": True}
+
+
+@app.get("/api/sources/scan-status")
+def scan_status():
+    return _scan_job
+
+
+@app.get("/api/sources/{sid}/stats")
+def source_stats(sid: int):
+    c = init_conn()
+    st = c.execute("SELECT status, COUNT(*) n FROM calls WHERE source_id=? GROUP BY status",
+                   (sid,)).fetchall()
+    return {r["status"]: r["n"] for r in st}
+
+
 # ---------- search / detail ----------
 @app.get("/api/calls")
 def list_calls(q: str = "", contact: str = "", who: str = "", date_from: str = "",
-               date_to: str = "", status: str = "", page: int = 1, size: int = 25):
+               date_to: str = "", status: str = "", source: int = 0,
+               page: int = 1, size: int = 25):
     c = init_conn()
     w, p = ["1=1"], []
     if q:
@@ -149,6 +281,8 @@ def list_calls(q: str = "", contact: str = "", who: str = "", date_from: str = "
         w.append("c.call_time<=?"); p.append(date_to + "T23:59:59")
     if status:
         w.append("c.status=?"); p.append(status)
+    if source:
+        w.append("c.source_id=?"); p.append(source)
     where = " AND ".join(w)
     total = c.execute(
         f"SELECT COUNT(DISTINCT c.id) FROM calls c LEFT JOIN segments s ON s.call_id=c.id"

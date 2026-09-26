@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS calls(
   fulltext_zh TEXT,                    -- 中文全文（检索用）
   fulltext_en TEXT,                    -- 英文全文（检索用）
   speaker_map TEXT,                    -- JSON {local_spk: global_speaker_id or 'me'/'other'}
+  source_id INTEGER,                   -- FK sources.id（可空）
   updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS segments(
@@ -116,7 +117,30 @@ CREATE TABLE IF NOT EXISTS graph_edges(
 CREATE TABLE IF NOT EXISTS meta(
   key TEXT PRIMARY KEY, value TEXT
 );
+CREATE TABLE IF NOT EXISTS sources(                        -- 外部录音库（本机目录/NAS 挂载）
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT UNIQUE NOT NULL,
+  path TEXT UNIQUE NOT NULL,
+  enabled INTEGER DEFAULT 1,
+  note TEXT,
+  last_scan_at TEXT,
+  last_result TEXT,                    -- JSON {added,updated,unchanged}
+  created_at TEXT
+);
 """
+
+MIGRATIONS = [
+    "ALTER TABLE calls ADD COLUMN source_id INTEGER",
+]
+
+
+def migrate(conn):
+    for sql in MIGRATIONS:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # duplicate column
+    conn.commit()
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
@@ -125,6 +149,7 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     conn.commit()
+    migrate(conn)
     return conn
 
 

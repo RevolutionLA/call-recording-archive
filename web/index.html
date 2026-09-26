@@ -125,7 +125,7 @@ a{color:var(--slate)}
 <main id="view"></main>
 <script>
 const V=document.getElementById('view'), nav=document.getElementById('nav');
-const pages=[['dash','档案总览'],['calls','找通话'],['graph','关系图谱'],['voices','音色库']];
+const pages=[['dash','档案总览'],['calls','找通话'],['graph','关系图谱'],['voices','音色库'],['sources','录音库']];
 let cur='dash';
 function renderNav(){nav.innerHTML='';pages.forEach(([k,t])=>{const b=document.createElement('button');
   b.textContent=t;b.className=cur===k?'on':'';b.setAttribute('aria-current',cur===k?'page':'false');
@@ -220,23 +220,27 @@ function drawRiver(tl){
   cv.onclick=e=>{const r=cv.getBoundingClientRect();
     const d=new Date(+t0+((e.clientX-r.left)/r.width)*days*864e5);
     const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    qp={page:1,size:25,from:key,to:key};cur='calls';renderNav();calls(true)};
+    qp={page:1,size:25,date_from:key,date_to:key};cur='calls';renderNav();calls(true)};
 }
 
 /* ================= 找通话 ================= */
 let qp={page:1,size:25};
 async function calls(preset){
+  const srcs=await J('/api/sources').catch(()=>[]);
   V.innerHTML=`<div class="bar">
     <input id="q" placeholder="说过的话，全文找" style="width:250px" value="${esc(qp.q||'')}">
     <input id="ct" placeholder="联系人或号码" style="width:150px" value="${esc(qp.contact||'')}">
-    <input id="f" type="date" value="${esc(qp.from||'')}"><span class="muted">到</span><input id="t" type="date" value="${esc(qp.to||'')}">
+    <input id="f" type="date" value="${esc(qp.date_from||'')}"><span class="muted">到</span><input id="t" type="date" value="${esc(qp.date_to||'')}">
     <select id="who"><option value="">谁说的都行</option>
       <option value="me"${qp.who=='me'?' selected':''}>我说过话的</option>
       <option value="other"${qp.who=='other'?' selected':''}>对方说过话的</option></select>
+    ${srcs.length>1?`<select id="src"><option value="">所有录音库</option>${
+      srcs.map(s=>`<option value="${s.id}"${qp.source==s.id?' selected':''}>${esc(s.name)}</option>`).join('')}</select>`:''}
     <button class="btn" id="go">找</button></div>
     <div id="list" class="card">输入条件，或直接点总览页的「通话长河」定位某天。</div>`;
   const go=()=>{qp={page:1,size:25,q:V.querySelector('#q').value,contact:V.querySelector('#ct').value,
-    from:V.querySelector('#f').value,to:V.querySelector('#t').value,who:V.querySelector('#who').value};render()};
+    date_from:V.querySelector('#f').value,date_to:V.querySelector('#t').value,
+    who:V.querySelector('#who').value,source:(V.querySelector('#src')||{}).value||''};render()};
   V.querySelector('#go').onclick=go;V.querySelectorAll('input').forEach(i=>i.onkeydown=e=>{if(e.key==='Enter')go()});
   async function render(){
     const p=new URLSearchParams(Object.entries(qp).filter(x=>x[1]!==''));
@@ -258,7 +262,7 @@ async function calls(preset){
     el.querySelector('#prev').onclick=()=>{if(qp.page>1){qp.page--;render()}};
     el.querySelector('#next').onclick=()=>{if(qp.page*qp.size<d.total){qp.page++;render()}};
   }
-  if(preset){V.querySelector('#f').value=qp.from||'';V.querySelector('#t').value=qp.to||''}
+  if(preset){V.querySelector('#f').value=qp.date_from||'';V.querySelector('#t').value=qp.date_to||''}
   render();
 }
 async function detail(id){
@@ -328,7 +332,65 @@ async function voices(){
     ||'<div class="muted" style="padding:22px 6px">还没有音色文件。等转写与标注完成后，运行 <b>python pipeline.py voices</b> 生成。</div>'}</div>`;
 }
 
-const P={dash,calls,graph,voices};
+/* ================= 录音库（外部目录/NAS） ================= */
+let scanPoll=null;
+async function sources(){
+  const vs=await J('/api/sources');
+  V.innerHTML=`<h2>录音库 · 本机目录或已挂载的 NAS，添加后点「扫描入库」即可增量收录</h2>
+  <div class="bar" style="margin:0 0 14px">
+    <input id="nname" placeholder="库名称，如：NAS-旧手机录音" style="width:200px">
+    <input id="npath" placeholder="路径，如：\\\\NAS\\recordings 或 Z:\\callrec" style="width:340px">
+    <button class="btn" id="add">添加录音库</button>
+    <span id="msg" class="muted"></span></div>
+  <div class="card"><table><tr><th>名称</th><th>路径</th><th>通话数</th><th>时长</th><th>已转写</th><th>出错</th><th>上次扫描</th><th>操作</th></tr>
+  ${vs.map(s=>`<tr><td><b>${esc(s.name)}</b>${s.enabled?'':' <span class="pill">已停用</span>'}</td>
+    <td class="fn" style="max-width:300px" title="${esc(s.path)}">${esc(s.path)}</td>
+    <td class="num"><a href="#" data-view="${s.id}">${s.n_calls}</a></td>
+    <td class="num">${s.hours??'—'}h</td><td class="num">${s.n_done}</td>
+    <td class="num">${s.n_err||'—'}</td>
+    <td class="num" style="font-size:12px">${s.last_scan_at?fmt(s.last_scan_at):'未扫描'}</td>
+    <td style="white-space:nowrap"><button class="btn" data-scan="${s.id}">扫描入库</button>
+      <button class="btn" data-toggle="${s.id}" data-on="${s.enabled}">${s.enabled?'停用':'启用'}</button>
+      <button class="btn" data-del="${s.id}">移除</button></td></tr>`).join('')}
+  </table></div>
+  <div class="muted" style="margin-top:10px;font-size:12px">扫描只登记新文件与变化文件，不会动已有转写结果；NAS 换挂载盘符时，编辑路径后重新扫描即可（若路径变化导致重复登记，请到数据库层面处理）。</div>`;
+  const msg=V.querySelector('#msg');
+  V.querySelector('#add').onclick=async()=>{
+    const name=V.querySelector('#nname').value.trim(),path=V.querySelector('#npath').value.trim();
+    if(!name||!path){msg.textContent='名称和路径都要填';return}
+    msg.textContent='添加中…';
+    const r=await fetch('/api/sources',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name,path})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){msg.textContent='失败：'+(j.detail||r.status);return}
+    sources();
+  };
+  V.querySelectorAll('[data-view]').forEach(a=>a.onclick=e=>{e.preventDefault();
+    qp={page:1,size:25,source:a.dataset.view};cur='calls';renderNav();calls()});
+  V.querySelectorAll('[data-scan]').forEach(b=>b.onclick=async()=>{
+    const r=await fetch(`/api/sources/${b.dataset.scan}/scan`,{method:'POST'});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){msg.textContent=j.detail||'启动扫描失败';return}
+    msg.textContent='扫描中（含时长探测，文件多时需几分钟）…';b.disabled=true;
+    clearInterval(scanPoll);
+    scanPoll=setInterval(async()=>{
+      const st=await J('/api/sources/scan-status');
+      if(!st.running){clearInterval(scanPoll);msg.textContent='扫描完成：'+st.message;sources()}
+      else msg.textContent='扫描中… '+st.message},2000)});
+  V.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=async()=>{
+    await fetch('/api/sources/'+b.dataset.toggle,{method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({enabled:b.dataset.on==='1'?0:1})});sources()});
+  V.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{
+    let q='/api/sources/'+b.dataset.del;
+    if(!confirm('移除这个录音库记录？'))return
+    const r=await fetch(q,{method:'DELETE'});const j=await r.json().catch(()=>({}));
+    if(!r.ok){if(confirm(j.detail+'\\n仅移除库记录（保留通话）？')){
+        const r2=await fetch(q+'?unlink=1',{method:'DELETE'});
+        if(r2.ok)sources();else msg.textContent='删除失败'}return}
+    sources()});
+}
+
+const P={dash,calls,graph,voices,sources};
 renderNav();P.dash();
 setInterval(async()=>{try{const p=await J('/api/progress');
   document.getElementById('status').textContent='待处理 '+(p.pending??'—')+' · 已转写 '+(p.transcribed??'—')+' · 已摘要 '+(p.analyzed??'—')}catch(e){}},5000);
