@@ -5,12 +5,20 @@ __pycache__/
 *.pyc
 .venv/
 
+# 本机配置（含个人路径），入库的是 config.example.yaml
+config.yaml
+
 # 录音文件（放在项目根目录）
 *.m4a
 *.mp3
 *.wav
 *.amr
 *.ogg
+*.opus
+*.flac
 *.3gp
 *.aac
 *.mp4
+*.wma
+*.silk
+*.slk

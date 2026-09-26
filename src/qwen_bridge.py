@@ -11,21 +11,31 @@ from pathlib import Path
 from . import db
 
 HERE = Path(__file__).resolve().parent
-MODELS = Path.home() / ".cache/modelscope/hub/Qwen"
-ASR_PATH = str(MODELS / "Qwen3-ASR-1___7B")
-ALIGNER_PATH = str(MODELS / "Qwen3-ForcedAligner-0___6B")
+DEFAULT_MODELS = Path.home() / ".cache/modelscope/hub/Qwen"
 
 
-def worker_python() -> str:
-    import os
-    cand = [
+def _qwen_cfg(cfg: dict) -> dict:
+    q = (cfg or {}).get("qwen") or {}
+    return {
+        "python": q.get("python"),
+        "asr": q.get("asr_model_path") or str(DEFAULT_MODELS / "Qwen3-ASR-1___7B"),
+        "aligner": q.get("aligner_model_path") or str(DEFAULT_MODELS / "Qwen3-ForcedAligner-0___6B"),
+    }
+
+
+def worker_python(cfg: dict = None) -> str:
+    cand = []
+    custom = (cfg or {}).get("qwen", {}).get("python") if cfg else None
+    if custom:
+        cand.append(custom)
+    cand += [
         r"C:\ProgramData\anaconda3\envs\qwen3_asr\python.exe",
         r"C:\ProgramData\anaconda3\envs\vllm\python.exe",
     ]
     for c in cand:
         if Path(c).exists():
             return c
-    raise SystemExit("找不到 qwen_asr conda 环境（请检查 config 或环境名）")
+    raise SystemExit("找不到 qwen_asr Python 环境（在 config.yaml 的 qwen.python 里指定）")
 
 
 def refine_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0,
@@ -39,7 +49,9 @@ def refine_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0,
     print(f"待 Qwen3 精修通话: {len(calls)}")
     if not calls:
         return
-    py = worker_python()
+    qc = _qwen_cfg(cfg)
+    py = worker_python(cfg)
+    asr_path, aligner_path = qc["asr"], qc["aligner"]
     t0 = time.time()
     for i0 in range(0, len(calls), batch_calls):
         chunk = calls[i0:i0 + batch_calls]
@@ -64,7 +76,7 @@ def refine_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0,
         log = open(tmp / "worker.log", "wb")
         print(f"批次 {i0//batch_calls+1}: {len(jobs)} 段 -> worker({py})", flush=True)
         r = subprocess.run([py, str(HERE / "worker_qwen.py"), str(jf), str(of),
-                            ASR_PATH, ALIGNER_PATH], stdout=log, stderr=subprocess.STDOUT)
+                            asr_path, aligner_path], stdout=log, stderr=subprocess.STDOUT)
         log.close()
         if not of.exists():
             print("  worker 失败，见", tmp / "worker.log")
@@ -84,7 +96,7 @@ def refine_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0,
                 "INSERT OR REPLACE INTO asr_outputs(call_id,engine,lang,text,words_json,model_path,created_at) "
                 "VALUES(?,?,?,?,?,?,?)",
                 (d["call_id"], "qwen3-asr", d.get("lang", ""), d.get("text", ""),
-                 json.dumps(d.get("words", []), ensure_ascii=False), ASR_PATH, db.now()))
+                 json.dumps(d.get("words", []), ensure_ascii=False), asr_path, db.now()))
             if d.get("text"):
                 conn.execute("UPDATE segments SET text_zh=? WHERE id=?", (d["text"], d["seg_id"]))
             if d.get("words"):
