@@ -62,6 +62,7 @@ llm:
   temperature: 0.3
   max_tokens: 1024
   enabled: true
+  max_minutes: 30                         # 每轮摘要限时：单卡 GPU 要和精修轮转，别一次把上千通跑完
 
 # ---------- Qwen3 精修（可选） ----------
 # 用第二个 Python 环境逐段「重听」已切分语音段：文字更准（专名/数字/方言口音），

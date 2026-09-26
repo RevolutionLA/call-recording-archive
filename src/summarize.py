@@ -91,8 +91,15 @@ def run_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0):
         q += f" LIMIT {int(limit)}"
     rows = conn.execute(q).fetchall()
     print(f"待摘要通话: {len(rows)}")
+    # 单卡 GPU 要和 Qwen3 精修轮转：一次把 1400 通跑完会把精修饿掉好几个小时
+    cap = float(cfg["llm"].get("max_minutes", 30)) * 60
+    t0 = time.time()
     done = fail = 0
     for i, r in enumerate(rows, 1):
+        if time.time() - t0 > cap:
+            print(f"  摘要让位：本轮已到 {cap/60:.0f} 分钟上限，"
+                  f"剩余 {len(rows)-i+1} 通下一轮续跑", flush=True)
+            break
         transcript = transcript_text(conn, r["id"])
         if not transcript.strip():
             conn.execute("UPDATE calls SET summary='(空)',status='analyzed',updated_at=? WHERE id=?",
