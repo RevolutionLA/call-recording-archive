@@ -3,187 +3,335 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>通话录音档案库 · 驾驶舱</title>
+<title>通话档案</title>
 <script src="/static/vendor/echarts.min.js"></script>
 <script src="/static/vendor/cytoscape.min.js"></script>
 <style>
-:root{--bg:#0e1420;--panel:#161e2e;--line:#232e45;--txt:#dbe4f3;--dim:#8394ad;--acc:#4f8ff7;--ok:#3ecf8e}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.55 "Microsoft YaHei",system-ui}
-header{display:flex;gap:18px;align-items:center;padding:12px 22px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:9}
-header h1{font-size:17px;margin:0 20px 0 0;white-space:nowrap}
-nav button{background:none;border:1px solid transparent;color:var(--dim);padding:6px 14px;border-radius:8px;cursor:pointer;font-size:14px}
-nav button.on{color:var(--txt);background:#1f2a40;border-color:var(--line)}
-main{padding:20px;max-width:1280px;margin:0 auto}
-.grid{display:grid;gap:14px}.g4{grid-template-columns:repeat(4,1fr)}.g2{grid-template-columns:1fr 1fr}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
-.kpi b{font-size:26px;display:block;color:#fff}.kpi span{color:var(--dim)}
-.chart{height:280px}h3{margin:2px 0 10px;font-size:15px;color:var(--dim);font-weight:600}
+@font-face{font-family:'Space Grotesk';src:url('/static/vendor/fonts/space-grotesk-400.woff2') format('woff2');font-weight:400}
+@font-face{font-family:'Space Grotesk';src:url('/static/vendor/fonts/space-grotesk-500.woff2') format('woff2');font-weight:500}
+@font-face{font-family:'Space Grotesk';src:url('/static/vendor/fonts/space-grotesk-700.woff2') format('woff2');font-weight:700}
+:root{
+  --bg:#131417;--panel:#1a1c20;--panel2:#20232a;--line:#2b2e35;
+  --txt:#e9e6df;--dim:#8b8f97;--faint:#5c6067;
+  --amber:#e8a33d;--amber-dim:#8a6224;--teal:#63b3a5;--slate:#7f8ea3;--sand:#c9b28a;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--txt);
+  font:14px/1.7 "Microsoft YaHei",system-ui,sans-serif}
+.num{font-family:'Space Grotesk',system-ui;font-variant-numeric:tabular-nums}
+
+/* ---------- header ---------- */
+header{display:flex;align-items:baseline;gap:26px;padding:18px 28px 14px;
+  border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:9}
+.logo{font-size:16px;font-weight:700;letter-spacing:.06em;display:flex;align-items:center;gap:9px}
+.logo .dot{width:8px;height:8px;border-radius:50%;background:var(--amber);
+  box-shadow:0 0 10px 1px rgba(232,163,61,.55);align-self:center}
+nav{display:flex;gap:4px}
+nav button{background:none;border:0;color:var(--dim);padding:6px 13px;cursor:pointer;
+  font-size:14px;font-family:inherit;border-radius:6px;position:relative}
+nav button:hover{color:var(--txt)}
+nav button.on{color:var(--txt)}
+nav button.on::after{content:'';position:absolute;left:13px;right:13px;bottom:-2px;
+  height:2px;background:var(--amber)}
+#status{margin-left:auto;font-size:12px;color:var(--faint)}
+:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+
+main{padding:26px 28px 60px;max-width:1240px;margin:0 auto}
+h2{font-size:13px;font-weight:500;color:var(--faint);margin:34px 0 12px}
+
+/* ---------- river (hero) ---------- */
+#river-wrap{position:relative;margin-top:6px}
+#river{width:100%;height:150px;display:block;cursor:crosshair}
+#river-tip{position:absolute;pointer-events:none;background:var(--panel2);border:1px solid var(--line);
+  border-radius:6px;padding:4px 10px;font-size:12px;color:var(--txt);opacity:0;transition:opacity .12s;white-space:nowrap}
+#river-axis{display:flex;justify-content:space-between;font-size:11px;color:var(--faint);margin-top:2px}
+
+/* ---------- stat line ---------- */
+.statline{display:flex;flex-wrap:wrap;gap:44px;margin:26px 2px 0;padding:0}
+.stat b{display:block;font-size:34px;font-weight:500;line-height:1.15;color:var(--txt)}
+.stat span{font-size:12px;color:var(--faint)}
+.stat.hot b{color:var(--amber)}
+
+/* ---------- charts ---------- */
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:1fr 1fr}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+.card h3{margin:0 0 10px;font-size:13px;font-weight:500;color:var(--dim)}
+.chart{height:270px}
+
+/* ---------- search ---------- */
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
+input,select{background:var(--panel);border:1px solid var(--line);color:var(--txt);
+  padding:8px 12px;border-radius:8px;font-size:13px;font-family:inherit}
+input:focus,select:focus{border-color:var(--amber-dim)}
+.btn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:8px 18px;
+  border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit}
+.btn:hover{border-color:var(--amber-dim);color:var(--amber)}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
-th{color:var(--dim);font-weight:600;position:sticky;top:0;background:var(--panel)}
-tr.row:hover{background:#1b2740;cursor:pointer}
-input,select{background:#101827;border:1px solid var(--line);color:var(--txt);padding:7px 10px;border-radius:8px;font-size:13px}
-.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
-.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;background:#24304a;color:#9db4d8;margin-right:6px}
-.me{background:#173753;color:#7cc1ff}.other{background:#20412c;color:#7fe0a8}
-#seglist{max-height:420px;overflow:auto}
-.seg{margin:6px 0;padding:8px 10px;border-radius:10px;background:#121a2a}
-.seg .t{color:var(--dim);font-size:11px;margin-right:8px}
-audio{width:100%;margin:8px 0}
-.pager{display:flex;gap:10px;align-items:center;color:var(--dim);margin-top:10px}
-.pager button{background:#1f2a40;border:1px solid var(--line);color:var(--txt);padding:4px 12px;border-radius:6px;cursor:pointer}
-#graphbox{height:560px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
-.voicecard{display:flex;gap:12px;align-items:center}.voicecard img,.vc{width:52px;height:52px;border-radius:50%;background:#25344f;display:flex;align-items:center;justify-content:center;font-size:20px}
-.muted{color:var(--dim)}#status{margin-left:auto;font-size:12px;color:var(--dim)}
-a{color:var(--acc)}
+th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{color:var(--faint);font-weight:500;font-size:12px;position:sticky;top:0;background:var(--panel)}
+tr.row:hover{background:#1d2026;cursor:pointer}
+td.time{color:var(--amber);white-space:nowrap}
+td.sum{max-width:360px;color:var(--dim)}
+td.fn{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--faint);font-size:12px}
+.pill{display:inline-block;padding:1px 9px;border-radius:99px;font-size:11px;
+  background:var(--panel2);color:var(--slate);border:1px solid var(--line)}
+.pill.done{color:var(--teal);border-color:#2c4a44}
+.pill.err{color:#d96c5f;border-color:#4a2c28}
+.pager{display:flex;gap:12px;align-items:center;color:var(--faint);margin-top:12px;font-size:13px}
+
+/* ---------- call detail ---------- */
+#detail{margin-top:18px;border-left:2px solid var(--amber)}
+#detail .head{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+#detail .head b{font-size:18px;font-weight:500}
+audio{width:100%;margin:12px 0;height:36px}
+.summary{background:var(--panel2);border-radius:8px;padding:12px 14px;margin:10px 0;font-size:13px}
+.summary .todos{margin-top:8px;color:var(--dim)}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;
+  background:#23262e;color:var(--slate);margin:2px 4px 0 0}
+#seglist{max-height:460px;overflow:auto;margin-top:14px;padding-right:6px}
+.seg{max-width:78%;margin:8px 0;padding:8px 12px;border-radius:10px;background:var(--panel2)}
+.seg .who{font-size:11px;color:var(--faint);margin-bottom:2px}
+.seg .t{font-size:11px;color:var(--faint);margin-left:8px}
+.seg.me{margin-left:auto;border-right:2px solid var(--amber)}
+.seg.me .who{color:var(--amber)}
+.seg.other{border-left:2px solid var(--teal)}
+.seg.other .who{color:var(--teal)}
+.seg.unknown{border-left:2px solid var(--faint)}
+
+/* ---------- graph / voices ---------- */
+#graphbox{height:580px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+.vrow{display:flex;gap:16px;align-items:flex-start;padding:16px 4px;border-bottom:1px solid var(--line)}
+.vrow .av{width:44px;height:44px;flex:none;border-radius:50%;background:var(--panel2);
+  border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+  font-size:18px;color:var(--teal);font-family:'Space Grotesk'}
+.vrow audio{width:300px;height:32px}
+.vmeta{font-size:12px;color:var(--faint)}
+.evrow{padding:9px 4px;border-bottom:1px solid var(--line);font-size:13px}
+.evrow .t{color:var(--faint);font-family:'Space Grotesk';font-size:12px;margin-right:10px}
+a{color:var(--slate)}
+.muted{color:var(--faint)}
+@media (max-width:860px){.g2{grid-template-columns:1fr}.statline{gap:22px}header{gap:12px;flex-wrap:wrap}}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 </style>
 </head>
 <body>
 <header>
-  <h1>📞 通话录音档案库</h1>
+  <div class="logo"><span class="dot"></span>通话档案</div>
   <nav id="nav"></nav>
   <div id="status"></div>
 </header>
 <main id="view"></main>
 <script>
-const V = document.getElementById('view'), nav = document.getElementById('nav');
-const pages = [['dash','驾驶舱'],['calls','通话检索'],['graph','关系图谱'],['voices','音色库']];
-let cur = 'dash';
-function renderNav(){ nav.innerHTML=''; pages.forEach(([k,t])=>{const b=document.createElement('button');b.textContent=t;b.className=cur===k?'on':'';b.onclick=()=>{cur=k;renderNav();P[cur]()};nav.appendChild(b)}) }
-async function J(u){ const r=await fetch(u); if(!r.ok) throw new Error(r.status); return r.json() }
+const V=document.getElementById('view'), nav=document.getElementById('nav');
+const pages=[['dash','档案总览'],['calls','找通话'],['graph','关系图谱'],['voices','音色库']];
+let cur='dash';
+function renderNav(){nav.innerHTML='';pages.forEach(([k,t])=>{const b=document.createElement('button');
+  b.textContent=t;b.className=cur===k?'on':'';b.setAttribute('aria-current',cur===k?'page':'false');
+  b.onclick=()=>{cur=k;renderNav();P[cur]()};nav.appendChild(b)})}
+async function J(u){const r=await fetch(u);if(!r.ok)throw new Error(r.status+' '+u);return r.json()}
 const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const dur=s=>s==null?'-':(s>=60?Math.floor(s/60)+'分'+Math.round(s%60)+'秒':Math.round(s)+'秒');
+const dur=s=>s==null?'—':(s>=60?Math.floor(s/60)+'分'+String(Math.round(s%60)).padStart(2,'0')+'秒':Math.round(s)+'秒');
 const fmt=ts=>ts?ts.replace('T',' '):'';
+const reduceMotion=matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-/* ---------------- dashboard ---------------- */
+/* ================= 档案总览 ================= */
 async function dash(){
-  V.innerHTML='<div class="muted">加载中…</div>';
-  const [ov,tl,hm,cts,dh,prog]=await Promise.all([J('/api/overview'),J('/api/stats/timeline?bucket=month'),J('/api/stats/heatmap'),J('/api/stats/contacts?limit=12'),J('/api/stats/duration'),J('/api/progress')]);
+  V.innerHTML='<div class="muted">正在载入档案…</div>';
+  const [ov,tl,hm,cts,dh,prog]=await Promise.all([
+    J('/api/overview'),J('/api/stats/timeline?bucket=day'),J('/api/stats/heatmap'),
+    J('/api/stats/contacts?limit=10'),J('/api/stats/duration'),J('/api/progress')]);
   V.innerHTML=`
-  <div class="grid g4">
-    <div class="card kpi"><b>${ov.total_calls}</b><span>通话总数（已处理 ${ov.done}）</span></div>
-    <div class="card kpi"><b>${ov.contacts}</b><span>联系人（声纹识别）</span></div>
-    <div class="card kpi"><b>${ov.hours}h</b><span>音频总时长</span></div>
-    <div class="card kpi" style="font-size:13px"><b style="font-size:15px">${fmt(ov.first_call)} ~ ${fmt(ov.last_call)}</b><span>时间跨度</span></div>
+  <div id="river-wrap"><canvas id="river" width="2360" height="300"></canvas><div id="river-tip"></div>
+    <div id="river-axis"></div></div>
+  <div class="statline">
+    <div class="stat hot"><b class="num">${ov.total_calls}</b><span>通电话</span></div>
+    <div class="stat"><b class="num">${ov.contacts}</b><span>位联系人</span></div>
+    <div class="stat"><b class="num">${ov.hours}<small style="font-size:15px">h</small></b><span>通话时长</span></div>
+    <div class="stat"><b class="num" style="font-size:19px;line-height:2.1">${fmt(ov.first_call).slice(0,10)} — ${fmt(ov.last_call).slice(0,10)}</b><span>时间跨度</span></div>
   </div>
-  <div class="grid g2" style="margin-top:14px">
-    <div class="card"><h3>每月通话量与分钟数</h3><div id="ch1" class="chart"></div></div>
-    <div class="card"><h3>星期 × 小时 通话热力</h3><div id="ch2" class="chart"></div></div>
-    <div class="card"><h3>Top 联系人（按通话次数）</h3><div id="ch3" class="chart"></div></div>
+  <h2>分布</h2>
+  <div class="grid g2">
+    <div class="card"><h3>什么时候打的（星期 × 小时）</h3><div id="ch2" class="chart"></div></div>
+    <div class="card"><h3>打得最多的人</h3><div id="ch3" class="chart"></div></div>
     <div class="card"><h3>通话时长分布</h3><div id="ch4" class="chart"></div></div>
-  </div>
-  <div class="card" style="margin-top:14px"><h3>处理状态</h3><span class="muted">${Object.entries(prog).map(([k,v])=>`<span class="tag">${k}:${v}</span>`).join('')}</span></div>`;
-  const mk=id=>echarts.init(document.getElementById(id),null,{renderer:'canvas'});
-  const axis={axisLine:{lineStyle:{color:'#33415e'}},axisLabel:{color:'#8394ad'}};
-  mk('ch1').setOption({backgroundColor:'transparent',tooltip:{trigger:'axis'},legend:{textStyle:{color:'#8394ad'}},
-    xAxis:{type:'category',data:tl.map(x=>x.bucket),...axis},yAxis:[{type:'value',...axis},{type:'value',...axis}],
-    series:[{name:'通话数',type:'bar',data:tl.map(x=>x.calls),itemStyle:{color:'#4f8ff7'}},
-            {name:'分钟',type:'line',yAxisIndex:1,data:tl.map(x=>x.minutes),itemStyle:{color:'#3ecf8e'}}]});
+    <div class="card"><h3>处理进度</h3><div style="padding:8px 2px">${
+      Object.entries(prog).map(([k,v])=>`<span class="tag">${k==='pending'?'待处理':k==='transcribed'?'已转写':k==='analyzed'?'已摘要':k==='normalized'?'已规范化':k==='error'?'出错':esc(k)} ${v}</span>`).join('')}
+      <div class="muted" style="font-size:12px;margin-top:10px">后台跑批持续进行中，此页每 5 秒自动刷新。</div></div></div>
+  </div>`;
+  drawRiver(tl);
+  const axis={axisLine:{lineStyle:{color:'#2b2e35'}},axisLabel:{color:'#8b8f97'}};
   const wd=['周日','周一','周二','周三','周四','周五','周六'];
   const data=[];for(let i=0;i<7;i++)for(let h=0;h<24;h++)data.push([h,i,hm[i][h]]);
-  mk('ch2').setOption({backgroundColor:'transparent',tooltip:{},grid:{left:44,right:10,top:10,bottom:56},
+  echarts.init(document.getElementById('ch2')).setOption({backgroundColor:'transparent',tooltip:{},
+    grid:{left:42,right:12,top:8,bottom:52},
     xAxis:{type:'category',data:[...Array(24).keys()],...axis},yAxis:{type:'category',data:wd,...axis},
     visualMap:{min:0,max:Math.max(1,...hm.flat()),calculable:true,orient:'horizontal',left:'center',bottom:0,
-      inRange:{color:['#16203a','#2b5fa8','#4f8ff7','#f7c948']},textStyle:{color:'#8394ad'}},
-    series:[{type:'heatmap',data}]})
-  mk('ch3').setOption({backgroundColor:'transparent',tooltip:{},grid:{left:110,right:20,top:10,bottom:24},
-    xAxis:{type:'value',...axis},yAxis:{type:'category',data:cts.map(x=>x.name).reverse(),...axis},
-    series:[{type:'bar',data:cts.map(x=>x.calls).reverse(),itemStyle:{color:'#8f6ff7'},label:{show:true,position:'right',color:'#8394ad'}}]});
-  mk('ch4').setOption({backgroundColor:'transparent',tooltip:{},grid:{left:44,right:10,top:10,bottom:28},
-    xAxis:{type:'category',data:dh.map(x=>x.label),...axis},yAxis:{type:'value',...axis},
-    series:[{type:'bar',data:dh.map(x=>x.count),itemStyle:{color:'#3ecf8e'}}]});
+      inRange:{color:['#1a1c20','#4a3a22','#8a6224','#e8a33d']},textStyle:{color:'#8b8f97'}},
+    series:[{type:'heatmap',data}]});
+  echarts.init(document.getElementById('ch3')).setOption({backgroundColor:'transparent',tooltip:{},
+    grid:{left:118,right:28,top:6,bottom:20},
+    xAxis:{type:'value',...axis,splitLine:{lineStyle:{color:'#20232a'}}},
+    yAxis:{type:'category',data:cts.map(x=>x.name).reverse(),...axis},
+    series:[{type:'bar',data:cts.map(x=>x.calls).reverse(),barWidth:10,
+      itemStyle:{color:'#63b3a5',borderRadius:[0,4,4,0]},label:{show:true,position:'right',color:'#8b8f97'}}]});
+  echarts.init(document.getElementById('ch4')).setOption({backgroundColor:'transparent',tooltip:{},
+    grid:{left:42,right:12,top:8,bottom:26},
+    xAxis:{type:'category',data:dh.map(x=>x.label),...axis},
+    yAxis:{type:'value',...axis,splitLine:{lineStyle:{color:'#20232a'}}},
+    series:[{type:'bar',data:dh.map(x=>x.count),barWidth:22,itemStyle:{color:'#8a6224',borderRadius:[4,4,0,0]}}]});
 }
 
-/* ---------------- call list & detail ---------------- */
+/* 通话长河：每天一根琥珀刻度，点击跳到该日检索 */
+function drawRiver(tl){
+  const cv=document.getElementById('river'), tip=document.getElementById('river-tip');
+  const dpr=devicePixelRatio||1, W=cv.clientWidth, H=150;
+  cv.width=W*dpr;cv.height=H*dpr;const g=cv.getContext('2d');g.scale(dpr,dpr);
+  if(!tl.length)return;
+  const t0=new Date(tl[0].bucket+'T00:00:00'), t1=new Date(tl[tl.length-1].bucket+'T00:00:00');
+  const days=Math.max(1,Math.round((t1-t0)/864e5)+1);
+  const byDay={};tl.forEach(x=>byDay[x.bucket]=x.calls);
+  const max=Math.max(...tl.map(x=>x.calls),1);
+  const bw=Math.max(1,Math.min(4,W/days-1));
+  function frame(i){ // 画前 i 根
+    g.clearRect(0,0,W,H);
+    g.fillStyle='#20232a';g.fillRect(0,H-1,W,1);
+    for(let k=0;k<Math.min(i,tl.length);k++){
+      const d=new Date(tl[k].bucket+'T00:00:00');
+      const x=(d-t0)/864e5/days*(W-8)+4;
+      const h=Math.max(2,Math.sqrt(tl[k].calls/max)*(H-26));
+      g.fillStyle=tl[k].calls>=max*.5?'#e8a33d':'#8a6224';
+      g.fillRect(x,H-4-h,bw,h);
+    }
+  }
+  if(reduceMotion)frame(tl.length);
+  else{const t=performance.now();(function anim(){const p=Math.min(1,(performance.now()-t)/1200);
+    frame(Math.ceil(p*p*(2-1)*tl.length));if(p<1)requestAnimationFrame(anim)})()}
+  const ax=document.getElementById('river-axis');
+  ax.innerHTML=[0,.25,.5,.75,1].map(p=>{const d=new Date(+t0+p*(t1-t0));
+    return `<span>${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}</span>`}).join('');
+  cv.onmousemove=e=>{const r=cv.getBoundingClientRect();
+    const x=(e.clientX-r.left)/r.width, d=new Date(+t0+x*days*864e5);
+    const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    tip.style.opacity=1;tip.style.left=Math.min(e.clientX-r.left,W-130)+'px';tip.style.top='-6px';
+    tip.innerHTML=`${key} · ${byDay[key]||0} 通`};
+  cv.onmouseleave=()=>tip.style.opacity=0;
+  cv.onclick=e=>{const r=cv.getBoundingClientRect();
+    const d=new Date(+t0+((e.clientX-r.left)/r.width)*days*864e5);
+    const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    qp={page:1,size:25,from:key,to:key};cur='calls';renderNav();calls(true)};
+}
+
+/* ================= 找通话 ================= */
 let qp={page:1,size:25};
-async function calls(){
+async function calls(preset){
   V.innerHTML=`<div class="bar">
-   <input id="q" placeholder="全文搜索（说话内容）" style="width:240px" value="${esc(qp.q||'')}">
-   <input id="ct" placeholder="联系人/号码" style="width:150px" value="${esc(qp.contact||'')}">
-   <input id="f" type="date" value="${esc(qp.from||'')}"><span class="muted">至</span><input id="t" type="date" value="${esc(qp.to||'')}">
-   <select id="who"><option value="">谁不说</option><option value="me"${qp.who=='me'?' selected':''}>包含「我」的段</option><option value="other"${qp.who=='other'?' selected':''}>包含「对方」的段</option></select>
-   <button class="on" id="go" style="background:#1f2a40;border:1px solid var(--line);color:var(--txt);padding:7px 16px;border-radius:8px;cursor:pointer">查询</button>
-   </div><div id="list" class="card">输入条件查询上万个通话…</div>`;
+    <input id="q" placeholder="说过的话，全文找" style="width:250px" value="${esc(qp.q||'')}">
+    <input id="ct" placeholder="联系人或号码" style="width:150px" value="${esc(qp.contact||'')}">
+    <input id="f" type="date" value="${esc(qp.from||'')}"><span class="muted">到</span><input id="t" type="date" value="${esc(qp.to||'')}">
+    <select id="who"><option value="">谁说的都行</option>
+      <option value="me"${qp.who=='me'?' selected':''}>我说过话的</option>
+      <option value="other"${qp.who=='other'?' selected':''}>对方说过话的</option></select>
+    <button class="btn" id="go">找</button></div>
+    <div id="list" class="card">输入条件，或直接点总览页的「通话长河」定位某天。</div>`;
   const go=()=>{qp={page:1,size:25,q:V.querySelector('#q').value,contact:V.querySelector('#ct').value,
     from:V.querySelector('#f').value,to:V.querySelector('#t').value,who:V.querySelector('#who').value};render()};
-  V.querySelector('#go').onclick=go; V.querySelectorAll('input').forEach(i=>i.onkeydown=e=>{if(e.key==='Enter')go()});
+  V.querySelector('#go').onclick=go;V.querySelectorAll('input').forEach(i=>i.onkeydown=e=>{if(e.key==='Enter')go()});
   async function render(){
     const p=new URLSearchParams(Object.entries(qp).filter(x=>x[1]!==''));
     const d=await J('/api/calls?'+p);
     const el=V.querySelector('#list');
-    el.innerHTML=`<table><tr><th>时间</th><th>联系人</th><th>时长</th><th>状态</th><th>摘要</th><th>文件名</th></tr>`+
-      d.items.map(c=>`<tr class="row" data-id="${c.id}"><td>${fmt(c.call_time)}</td><td>${esc(c.contact||c.contact_hint||c.phone||'-')}</td>
-      <td>${dur(c.duration_sec)}</td><td><span class="tag ${c.status==='error'?'other':''}">${c.status}</span></td>
-      <td style="max-width:340px">${esc((c.summary||'').slice(0,60))}</td><td class="muted" style="max-width:220px;overflow:hidden">${esc(c.filename)}</td></tr>`).join('')+
-      `</table><div class="pager"><button id="prev">上一页</button><span>${d.page} / 共 ${Math.max(1,Math.ceil(d.total/d.size))} 页 · ${d.total} 通</span><button id="next">下一页</button></div>`;
-    el.querySelectorAll('tr.row').forEach(tr=>tr.onclick=()=>detail(+tr.dataset.id));
+    if(!d.items.length){el.innerHTML='<div class="muted" style="padding:22px 6px">没有符合条件的通话。换个日期或清空联系人再试。</div>';return}
+    el.innerHTML=`<table><tr><th>什么时候</th><th>和谁</th><th>多长</th><th>状态</th><th>聊了什么</th><th>文件</th></tr>`+
+      d.items.map(c=>`<tr class="row" data-id="${c.id}" tabindex="0"><td class="time num">${fmt(c.call_time)}</td>
+      <td>${esc(c.contact||c.contact_hint||c.phone||'—')}</td>
+      <td class="num">${dur(c.duration_sec)}</td>
+      <td><span class="pill ${/analyzed|transcribed/.test(c.status)?'done':c.status=='error'?'err':''}">${
+        c.status=='pending'?'待处理':c.status=='error'?'出错':c.status=='analyzed'?'已摘要':'已转写'}</span></td>
+      <td class="sum">${esc((c.summary||'').slice(0,60))}</td><td class="fn">${esc(c.filename)}</td></tr>`).join('')+
+      `</table><div class="pager"><button class="btn" id="prev">上一页</button>
+      <span class="num">${d.page} / ${Math.max(1,Math.ceil(d.total/d.size))} 页 · 共 ${d.total} 通</span>
+      <button class="btn" id="next">下一页</button></div>`;
+    el.querySelectorAll('tr.row').forEach(tr=>{tr.onclick=()=>detail(+tr.dataset.id);
+      tr.onkeydown=e=>{if(e.key==='Enter')detail(+tr.dataset.id)}});
     el.querySelector('#prev').onclick=()=>{if(qp.page>1){qp.page--;render()}};
     el.querySelector('#next').onclick=()=>{if(qp.page*qp.size<d.total){qp.page++;render()}};
   }
+  if(preset){V.querySelector('#f').value=qp.from||'';V.querySelector('#t').value=qp.to||''}
   render();
 }
 async function detail(id){
+  document.getElementById('detail')?.remove();
   const c=await J('/api/calls/'+id);
   const el=document.createElement('div');
-  el.className='card'; el.style.marginTop='14px';
-  let ana={}; try{ana=JSON.parse(c.analysis||'{}')}catch(e){}
-  el.innerHTML=`<div class="bar"><b style="font-size:16px">${fmt(c.call_time)} · ${esc(c.contact_hint||c.phone||c.filename)}</b>
-    <span class="muted">时长 ${dur(c.duration_sec)} · 状态 ${c.status}</span>
-    <button id="close" style="margin-left:auto;background:#1f2a40;border:1px solid var(--line);color:var(--txt);padding:4px 12px;border-radius:6px;cursor:pointer">✕ 关闭</button></div>
-    <audio controls src="/api/media/${id}"></audio>
-    ${c.summary?`<div style="background:#121a2a;padding:10px 12px;border-radius:10px;margin:6px 0"><b>📝 摘要</b><br>${esc(c.summary)}
+  el.className='card';el.id='detail';
+  let ana={};try{ana=JSON.parse(c.analysis||'{}')}catch(e){}
+  el.innerHTML=`<div class="head"><b class="num">${fmt(c.call_time)}</b>
+    <span>${esc(c.contact_hint||c.phone||c.filename)}</span>
+    <span class="muted num">${dur(c.duration_sec)}</span>
+    <button class="btn" id="close" style="margin-left:auto">收起</button></div>
+    <audio controls preload="none" src="/api/media/${id}"></audio>
+    ${c.summary?`<div class="summary">${esc(c.summary)}
       ${(ana.topics||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
-      ${(ana.todos||[]).length?`<br><b>待办：</b>${(ana.todos||[]).map(t=>'· '+esc(t)).join('<br>')}`:''}</div>`:''}
-    <div id="seglist">${(c.segments||[]).map(s=>`<div class="seg"><span class="tag ${s.who}">${s.who=='me'?'我':(esc(s.contact_name)||s.who)}</span><span class="t">${new Date(s.start_ms).toISOString().substr(11,8)}</span>${esc(s.text_zh)}</div>`).join('')}</div>`;
-  V.appendChild(el); el.scrollIntoView({behavior:'smooth'});
+      ${(ana.todos||[]).length?`<div class="todos"><b>待办</b><br>${(ana.todos||[]).map(t=>'· '+esc(t)).join('<br>')}</div>`:''}</div>`:''}
+    <div id="seglist">${(c.segments||[]).map(s=>`<div class="seg ${s.who}">
+      <span class="who">${s.who=='me'?'我':esc(s.contact_name||'对方')}<span class="t num">${new Date(s.start_ms).toISOString().substr(11,8)}</span></span><br>${esc(s.text_zh)}</div>`).join('')
+      ||'<div class="muted">这通还没转写。等后台跑批完成后回来听。</div>'}</div>`;
+  V.appendChild(el);el.scrollIntoView({behavior:reduceMotion?'auto':'smooth',block:'start'});
   el.querySelector('#close').onclick=()=>el.remove();
 }
 
-/* ---------------- graph ---------------- */
+/* ================= 关系图谱 ================= */
 async function graph(){
-  V.innerHTML=`<div class="bar"><input id="gsince" type="date"><span class="muted">至</span><input id="guntil" type="date">
-   <button id="ggo" style="background:#1f2a40;border:1px solid var(--line);color:var(--txt);padding:7px 16px;border-radius:8px;cursor:pointer">筛选时间</button>
-   <span class="muted">节点：我=蓝 · 联系人=绿 · 事件=黄 · 话题=紫。双击联系人查看其通话。</span></div>
-   <div id="graphbox"></div><div class="card" style="margin-top:14px"><h3>最近事件（按时间）</h3><div id="evlist"></div></div>`;
+  V.innerHTML=`<div class="bar"><input id="gsince" type="date"><span class="muted">到</span><input id="guntil" type="date">
+    <button class="btn" id="ggo">筛选这段时间</button>
+    <span class="muted">琥珀=我 · 灰绿=联系人 · 沙=事件 · 石板=话题；双击联系人查他的通话</span></div>
+    <div id="graphbox"></div>
+    <h2>事件时间线</h2><div class="card" id="evlist" style="padding:4px 16px"></div>`;
+  V.querySelector('#ggo').onclick=graph;
   const q=new URLSearchParams();
   const s=V.querySelector('#gsince').value,u=V.querySelector('#guntil').value;
   if(s)q.set('since',s);if(u)q.set('until',u+'T23:59:59');
   const g=await J('/api/graph?'+q);
-  const cy=cytoscape({container:V.querySelector('#graphbox'),
+  cytoscape({container:V.querySelector('#graphbox'),
     elements:[...g.nodes.map(n=>({data:n.data})),...g.edges.map(e=>({data:e.data}))],
     style:[
-      {selector:'node',style:{label:'data(label)','color':'#dbe4f3','font-size':'11px','text-wrap':'wrap','text-max-width':'90px','background-color':'#54687f'}},
-      {selector:'node[type="me"]',style:{'background-color':'#4f8ff7','font-size':'15px','width':46,'height':46}},
-      {selector:'node[type="contact"]',style:{'background-color':'#3ecf8e','width':'mapData(deg,0,40,22,52)','height':'mapData(deg,0,40,22,52)'}},
-      {selector:'node[type="event"]',style:{'background-color':'#f7c948','shape':'round-rectangle','color':'#0e1420','font-weight':'bold'}},
-      {selector:'node[type="topic"]',style:{'background-color':'#8f6ff7','shape':'diamond','font-size':'10px'}},
-      {selector:'edge',style:{width:'.data(weight)','line-color':'#33415e','curve-style':'bezier','target-arrow-shape':'none'}},
-      {selector:'edge[kind="talked"]',style:{'line-color':'#4f8ff7'}},
-      {selector:'edge[kind="involves"]',style:{'line-color':'#f7c948'}}],
-    layout:{name:'cose',animate:false}});
-  cy.on('dbltap','node[type="contact"]',async ev=>{
-    const name=ev.target.data('label');
-    V.querySelector('#q')&&''; qp.contact=name; qp.page=1; cur='calls'; renderNav(); calls();
-    setTimeout(()=>{const i=document.getElementById('ct');if(i){i.value=name;document.getElementById('go').click()}},80);
-  });
+      {selector:'node',style:{label:'data(label)',color:'#e9e6df','font-size':'11px','text-wrap':'wrap','text-max-width':'90px','background-color':'#3a3f47'}},
+      {selector:'node[type="me"]',style:{'background-color':'#e8a33d','font-size':'15px',width:46,height:46,color:'#131417','font-weight':'bold'}},
+      {selector:'node[type="contact"]',style:{'background-color':'#63b3a5',width:'mapData(deg,0,40,20,48)',height:'mapData(deg,0,40,20,48)'}},
+      {selector:'node[type="event"]',style:{'background-color':'#c9b28a',shape:'round-rectangle',color:'#131417','font-weight':'bold','font-size':'10px'}},
+      {selector:'node[type="topic"]',style:{'background-color':'#7f8ea3',shape:'diamond','font-size':'10px'}},
+      {selector:'edge',style:{width:ele=>Math.max(1,Math.log2(1+(ele.data('weight')||1))),
+        'line-color':'#2b2e35','curve-style':'bezier'}},
+      {selector:'edge[kind="talked"]',style:{'line-color':'#3f434c'}},
+      {selector:'edge[kind="involves"]',style:{'line-color':'#5a4a2a'}}],
+    layout:{name:'cose',animate:false}})
+    .on('dbltap','node[type="contact"]',ev=>{
+      const name=ev.target.data('label');
+      qp={page:1,size:25,contact:name};cur='calls';renderNav();calls();
+      setTimeout(()=>{const i=document.getElementById('ct');if(i){i.value=name;document.getElementById('go').click()}},80)});
   const evs=await J('/api/events?limit=15');
-  V.querySelector('#evlist').innerHTML=evs.map(e=>`<div style="padding:6px 0;border-bottom:1px solid var(--line)"><span class="muted">${fmt(e.event_time)}</span> <b>${esc(e.title)}</b> <span class="muted">${esc(e.participants||'')}</span> <a href="#" onclick="cur='calls';renderNav();calls();return false">↗</a></div>`).join('')||'<span class="muted">运行 summarize + graph 后生成事件</span>';
+  V.querySelector('#evlist').innerHTML=evs.map(e=>`<div class="evrow"><span class="t">${fmt(e.event_time)}</span><b>${esc(e.title)}</b> <span class="muted">${esc(e.participants||'')}</span></div>`).join('')
+    ||'<div class="muted" style="padding:16px 4px">摘要跑完后，这里会按时间列出你经历的事。</div>';
 }
 
-/* ---------------- voices ---------------- */
+/* ================= 音色库 ================= */
 async function voices(){
   const vs=await J('/api/voices');
-  V.innerHTML=`<div class="card"><h3>音色文件（供千问 TTS / Qwen3-TTS 声音克隆：每段 6~18 秒干净人声 + 对应文本）</h3>
-  ${vs.map(v=>`<div class="voicecard" style="padding:10px 0;border-bottom:1px solid var(--line)">
-   <div class="vc">${esc((v.speaker||'?')[0])}</div><div style="flex:1"><b>${esc(v.speaker)}</b> <span class="muted">${v.clips.length} 段 / ${v.total_sec}s — 目录 data/voices/${esc(v.dir)}</span>
-   ${v.clips.map(c=>`<div style="margin-top:6px"><audio controls preload="none" src="${c.url}" style="width:320px;height:32px"></audio> <span class="muted">${esc(c.text)}</span> <span class="tag">${c.duration_sec}s</span></div>`).join('')}</div></div>`).join('')
-   ||'<span class="muted">还没有音色文件。跑完 run/align 后执行 <b>python pipeline.py voices</b></span>'}</div>`;
+  V.innerHTML=`<h2>音色文件 · 每段 6~18 秒干净人声，配对应文本，可直接用于千问 TTS 声音复刻</h2>
+  <div class="card">${vs.map(v=>`<div class="vrow">
+    <div class="av">${esc((v.speaker||'?')[0])}</div>
+    <div style="flex:1"><b>${esc(v.speaker)}</b> <span class="vmeta num">${v.clips.length} 段 / ${v.total_sec}s · data/voices/${esc(v.dir)}</span>
+    ${v.clips.map(c=>`<div style="margin-top:8px"><audio controls preload="none" src="${c.url}"></audio>
+      <div class="vmeta">${esc(c.text)}</div></div>`).join('')}</div></div>`).join('')
+    ||'<div class="muted" style="padding:22px 6px">还没有音色文件。等转写与标注完成后，运行 <b>python pipeline.py voices</b> 生成。</div>'}</div>`;
 }
 
 const P={dash,calls,graph,voices};
-renderNav(); P.dash();
+renderNav();P.dash();
 setInterval(async()=>{try{const p=await J('/api/progress');
-  document.getElementById('status').textContent=Object.entries(p).map(([k,v])=>`${k}:${v}`).join(' · ')}catch(e){}},5000);
+  document.getElementById('status').textContent='待处理 '+(p.pending??'—')+' · 已转写 '+(p.transcribed??'—')+' · 已摘要 '+(p.analyzed??'—')}catch(e){}},5000);
 </script>
 </body>
 </html>
