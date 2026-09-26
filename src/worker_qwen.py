@@ -116,22 +116,29 @@ def main():
     # 20 块且全部 padding 到最长，实测从 4s/段恶化到 36s/段
     # 组批时只记坐标不读音频：整批 30 通的 PCM 一次进内存会和模型抢页面文件
     # （实测这台机器可用提交内存只有十几 GB），轮到哪一批才读哪一批
-    groups, cur_jobs, cur_plan = [], [], []
+    groups, cur_jobs, cur_plan, cur_n = [], [], [], []
     for j in jobs:
         chunks = split_ms(j["start_ms"], j["end_ms"], chunk_ms)
         if cur_plan and len(cur_plan) + len(chunks) > items:
-            groups.append((cur_jobs, cur_plan))
-            cur_jobs, cur_plan = [], []
+            groups.append((cur_jobs, cur_plan, cur_n))
+            cur_jobs, cur_plan, cur_n = [], [], []
         bi = len(cur_jobs)
         cur_jobs.append(j)
+        cur_n.append(len(chunks))
         for s, e in chunks:
             cur_plan.append((bi, s, e))
     if cur_plan:
-        groups.append((cur_jobs, cur_plan))
+        groups.append((cur_jobs, cur_plan, cur_n))
+    # 接缝可观测性：块与块之间没有重叠，接缝处的字有可能被切两半丢掉，丢字率
+    # 没实测过，所以先把「有几处接缝、接缝两端是什么字」打到日志里，再决定要不要上重叠
+    seams = sum(n - 1 for _, _, ns in groups for n in ns)
+    print(f"[qwen] {len(groups)} 批 / {sum(len(p) for _, p, _ in groups)} 块 / "
+          f"{seams} 处接缝（涉及 {sum(1 for _, _, ns in groups for n in ns if n > 1)} 段）",
+          flush=True)
 
     with open(out_file, "w", encoding="utf-8") as fo:
         t0, n = time.time(), 0
-        for batch, plan in groups:
+        for batch, plan, _ns in groups:
             audios = [read_slice(batch[bi]["wav"], s, e) for bi, s, e in plan]
             try:
                 res = model.transcribe(audio=audios if len(audios) > 1 else audios[0],
@@ -158,6 +165,10 @@ def main():
                 m["words"] += ws
             for bi, j in enumerate(batch):
                 m = merged[bi]
+                if len(m["parts"]) > 1:
+                    edges = [f"{p[-1:]}|{q[:1]}" for p, q in zip(m["parts"], m["parts"][1:])]
+                    print(f"[qwen] seg {j['seg_id']} 跨{len(m['parts'])}块 "
+                          f"接缝两端字: {' '.join(edges)}", flush=True)
                 fo.write(json.dumps({"call_id": j["call_id"], "seg_id": j["seg_id"],
                                      "text": "".join(m["parts"]), "lang": m["lang"],
                                      "words": m["words"]}, ensure_ascii=False) + "\n")

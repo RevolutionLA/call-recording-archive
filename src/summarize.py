@@ -82,9 +82,14 @@ def chat(cfg, prompt, retries=2):
                               timeout=llm.get("timeout", 180))
             r.raise_for_status()
             data = r.json()
-            if kind == "ollama":
-                return data["message"]["content"]
-            return data["choices"][0]["message"]["content"]
+            content = (data["message"]["content"] if kind == "ollama"
+                       else data["choices"][0]["message"]["content"])
+            # 空正文是「静默退化」的主要形态：思考模型被派到 OpenAI 兼容路由上就是
+            # HTTP 200 + 空 content。当成失败抛出去，调用方记 error 并下一轮重跑，
+            # 而不是写一条空摘要把这通标成 analyzed 从此不再回头
+            if not (content or "").strip():
+                raise RuntimeError(f"{kind} 路由返回空正文（{url}）")
+            return content
         except Exception as e:
             if attempt == retries:
                 raise

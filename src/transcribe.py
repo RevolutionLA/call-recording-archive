@@ -111,6 +111,11 @@ def run_parallel(cfg: dict, workers: int, limit: int = 0):
         jf.write_text(json.dumps(ch), encoding="utf-8")
         logf = open(logs_dir / f"worker_{wi}.log", "w", encoding="utf-8")
         p = subprocess.Popen(
+            # 隐性契约：并行能成立，只是因为子进程带 --jobs 重新进入 main()，
+            # 而 main() 的锁条件是 `and not args.jobs`。以后若给 worker 换入口
+            # （新子命令 / 直接 import），每个 worker 都会去抢同一把 gpu 锁、
+            # 只有第一个跑，症状是「并行没提速」且不报错——子进程会 exit=76，
+            # 所以下面那行 exit= 一定要看
             [sys.executable, str(Path(__file__).resolve().parent.parent / "pipeline.py"),
              "run", "--jobs", str(jf)],
             stdout=logf, stderr=subprocess.STDOUT, cwd=str(Path(__file__).resolve().parent.parent))
