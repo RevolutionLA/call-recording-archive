@@ -19,32 +19,32 @@ def read_slice(path, start_ms, end_ms):
 
 
 def ts_to_words(ts):
-    """Best-effort convert ForcedAlignResult to [{w,s,e}] ms."""
+    """ForcedAlignResult -> [{w,s,e}] ms. Items are ForcedAlignItem(text, start_time, end_time in seconds)."""
     if ts is None:
         return []
     out = []
-    items = getattr(ts, "items", None) or getattr(ts, "alignments", None) \
-        or getattr(ts, "words", None) or (ts if isinstance(ts, (list, tuple)) else None)
+    items = getattr(ts, "items", None) \
+        or getattr(ts, "alignments", None) or getattr(ts, "words", None) \
+        or (ts if isinstance(ts, (list, tuple)) else None)
     if items is None:
         return []
     for it in items:
         if isinstance(it, dict):
             w = it.get("text") or it.get("w") or it.get("char") or it.get("word")
-            s = it.get("start", it.get("s")); e = it.get("end", it.get("e"))
+            s = it.get("start_time", it.get("start", it.get("s")))
+            e = it.get("end_time", it.get("end", it.get("e")))
         else:
-            try:
-                w = getattr(it, "text", None) or getattr(it, "char", None) or getattr(it, "word", None)
-                s = getattr(it, "start", None); e = getattr(it, "end", None)
-            except Exception:
-                continue
-        try:
-            s_ms = float(s) * (0.001 if float(s) > 1e6 else 1.0)
-            e_ms = float(e) * (0.001 if float(e) > 1e6 else 1.0)
-        except Exception:
+            w = getattr(it, "text", None) or getattr(it, "char", None) or getattr(it, "word", None)
+            s = getattr(it, "start_time", None)
+            if s is None:
+                s = getattr(it, "start", None)
+            e = getattr(it, "end_time", None)
+            if e is None:
+                e = getattr(it, "end", None)
+        if s is None or e is None:
             continue
-        if float(s) > 1e6:  # already ms
-            s_ms, e_ms = float(s), float(e)
-        out.append({"w": str(w), "s": int(s_ms), "e": int(e_ms)})
+        # seconds -> ms (values are per-slice seconds in this SDK)
+        out.append({"w": str(w), "s": int(float(s) * 1000), "e": int(float(e) * 1000)})
     return out
 
 
