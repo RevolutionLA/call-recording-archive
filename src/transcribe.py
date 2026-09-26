@@ -5,7 +5,7 @@ the batch. Long runs are expected (thousands of files): progress is printed
 per call and flushed to stdout so a background run can be watched.
 """
 from __future__ import annotations
-import sqlite3, time, json
+import sqlite3, time, json, gc
 import numpy as np
 from . import db, audio
 from .funasr_engine import FunAsrEngine, load_pcm16k, slice_ms, cluster_speakers
@@ -132,4 +132,6 @@ def process_one(conn, eng: FunAsrEngine, cfg, cid: int, path: str) -> float:
              np.asarray(e, dtype=np.float32).tobytes() if e is not None else None))
     conn.execute("UPDATE calls SET status='transcribed',updated_at=? WHERE id=?", (db.now(), cid))
     conn.commit()
+    del pcm, embs, utts, labels
+    gc.collect()
     return dur
