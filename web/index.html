@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>通话档案</title>
 <script src="/static/vendor/echarts.min.js"></script>
-<script src="/static/vendor/cytoscape.min.js"></script>
 <style>
 @font-face{font-family:'Space Grotesk';src:url('/static/vendor/fonts/space-grotesk-400.woff2') format('woff2');font-weight:400}
 @font-face{font-family:'Space Grotesk';src:url('/static/vendor/fonts/space-grotesk-500.woff2') format('woff2');font-weight:500}
@@ -101,7 +100,25 @@ audio{width:100%;margin:12px 0;height:36px}
 .seg.unknown{border-left:2px solid var(--faint)}
 
 /* ---------- graph / voices ---------- */
-#graphbox{height:580px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+#graphbox{position:relative;height:640px;border:1px solid var(--line);border-radius:12px;
+  background:radial-gradient(1100px 620px at 50% 44%,#15171d 0%,#0c0d10 72%);overflow:hidden}
+#gx{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab;touch-action:none}
+#gx.dragging{cursor:grabbing}
+.g-hud{position:absolute;z-index:2;font-size:11px;color:var(--dim);pointer-events:none}
+#g-legend{top:12px;left:14px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+#g-legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:1px}
+#g-legend i.dia{border-radius:0;transform:rotate(45deg)}
+#g-count{top:12px;right:14px;font-family:'Space Grotesk';font-variant-numeric:tabular-nums}
+#g-tip{position:absolute;z-index:3;pointer-events:none;background:rgba(29,32,38,.95);border:1px solid var(--line);
+  border-radius:6px;padding:3px 9px;font-size:12px;opacity:0;transition:opacity .12s;white-space:nowrap}
+#g-card{position:absolute;left:14px;bottom:14px;z-index:3;width:260px;display:none;
+  background:rgba(24,26,30,.93);border:1px solid var(--line);border-left:2px solid var(--amber);
+  border-radius:10px;padding:13px 15px;backdrop-filter:blur(8px)}
+#g-card.show{display:block}
+#g-card .nm{font-size:16px;font-weight:500}
+#g-card .kv{font-size:12px;color:var(--dim);margin-top:2px}
+#g-card .kv b{color:var(--txt);font-family:'Space Grotesk';font-weight:500}
+#g-card .btn{margin-top:10px;padding:5px 12px;font-size:12px}
 .vrow{display:flex;gap:16px;align-items:flex-start;padding:16px 4px;border-bottom:1px solid var(--line)}
 .vrow .av{width:44px;height:44px;flex:none;border-radius:50%;background:var(--panel2);
   border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
@@ -286,35 +303,249 @@ async function detail(id){
   el.querySelector('#close').onclick=()=>el.remove();
 }
 
-/* ================= 关系图谱 ================= */
+/* ================= 关系图谱 · 总机跳线盘（自绘 canvas 力导向） ================= */
 async function graph(){
-  V.innerHTML=`<div class="bar"><input id="gsince" type="date"><span class="muted">到</span><input id="guntil" type="date">
+  V.innerHTML=`<div class="bar">
+    <input id="gsince" type="date"><span class="muted">到</span><input id="guntil" type="date">
+    <input id="gsearch" placeholder="找一个人名/事件，回车定位" style="width:190px">
     <button class="btn" id="ggo">筛选这段时间</button>
-    <span class="muted">琥珀=我 · 灰绿=联系人 · 沙=事件 · 石板=话题；双击联系人查他的通话</span></div>
-    <div id="graphbox"></div>
+    <button class="btn" id="greset">复位视角</button></div>
+    <div id="graphbox"><canvas id="gx"></canvas>
+      <div class="g-hud" id="g-legend">
+        <span><i style="background:#e8a33d;box-shadow:0 0 8px 2px rgba(232,163,61,.5)"></i>我（总机）</span>
+        <span><i style="background:#63b3a5"></i>联系人 · 越大打得越多</span>
+        <span><i class="dia" style="background:#c9b28a"></i>事件</span>
+        <span><i style="background:#7f8ea3"></i>话题</span>
+        <span class="muted">跳线越粗话务越多 · 拖拽/滚轮缩放 · 单击看线路卡 · 双击跳检索</span></div>
+      <div class="g-hud" id="g-count"></div>
+      <div id="g-tip"></div>
+      <div id="g-card"></div></div>
     <h2>事件时间线</h2><div class="card" id="evlist" style="padding:4px 16px"></div>`;
-  V.querySelector('#ggo').onclick=graph;
   const q=new URLSearchParams();
   const s=V.querySelector('#gsince').value,u=V.querySelector('#guntil').value;
   if(s)q.set('since',s);if(u)q.set('until',u+'T23:59:59');
   const g=await J('/api/graph?'+q);
-  cytoscape({container:V.querySelector('#graphbox'),
-    elements:[...g.nodes.map(n=>({data:n.data})),...g.edges.map(e=>({data:e.data}))],
-    style:[
-      {selector:'node',style:{label:'data(label)',color:'#e9e6df','font-size':'11px','text-wrap':'wrap','text-max-width':'90px','background-color':'#3a3f47'}},
-      {selector:'node[type="me"]',style:{'background-color':'#e8a33d','font-size':'15px',width:46,height:46,color:'#131417','font-weight':'bold'}},
-      {selector:'node[type="contact"]',style:{'background-color':'#63b3a5',width:'mapData(deg,0,40,20,48)',height:'mapData(deg,0,40,20,48)'}},
-      {selector:'node[type="event"]',style:{'background-color':'#c9b28a',shape:'round-rectangle',color:'#131417','font-weight':'bold','font-size':'10px'}},
-      {selector:'node[type="topic"]',style:{'background-color':'#7f8ea3',shape:'diamond','font-size':'10px'}},
-      {selector:'edge',style:{width:ele=>Math.max(1,Math.log2(1+(ele.data('weight')||1))),
-        'line-color':'#2b2e35','curve-style':'bezier'}},
-      {selector:'edge[kind="talked"]',style:{'line-color':'#3f434c'}},
-      {selector:'edge[kind="involves"]',style:{'line-color':'#5a4a2a'}}],
-    layout:{name:'cose',animate:false}})
-    .on('dbltap','node[type="contact"]',ev=>{
-      const name=ev.target.data('label');
-      qp={page:1,size:25,contact:name};cur='calls';renderNav();calls();
-      setTimeout(()=>{const i=document.getElementById('ct');if(i){i.value=name;document.getElementById('go').click()}},80)});
+  V.querySelector('#ggo').onclick=graph;
+
+  const COL={me:'#e8a33d',contact:'#63b3a5',event:'#c9b28a',topic:'#7f8ea3'};
+  const nodes=g.nodes.map((n,i)=>{
+    const a=i*2.399963,r=46*Math.sqrt(i+1);
+    return {id:n.data.id,label:n.data.label,type:n.data.type,deg:n.data.deg||1,
+      w:0,call_id:null,t:null,x:Math.cos(a)*r,y:Math.sin(a)*r,vx:0,vy:0,fx:null,fy:null,
+      r:n.data.type==='me'?24:n.data.type==='contact'?Math.min(24,6+2.1*Math.sqrt(n.data.deg||1)):n.data.type==='event'?5:3.5};
+  });
+  const byId=new Map(nodes.map(n=>[n.id,n]));
+  const edges=[];
+  for(const e of g.edges){
+    const a=byId.get(e.data.source),b=byId.get(e.data.target);
+    if(!a||!b)continue;
+    const w=e.data.weight||1;
+    edges.push({a,b,kind:e.data.kind,w,time:e.data.time,call_id:e.data.call_id});
+    if(e.data.kind==='talked'){const c=a.type==='contact'?a:b;c.w+=w;c.t=c.t||e.data.time;}
+    if(e.data.kind==='involves'){const c=a.type==='contact'?a:(b.type==='contact'?b:null);if(c)c.t=c.t||e.data.time;}
+  }
+  const nbr=new Map(nodes.map(n=>[n.id,new Set()]));
+  for(const e of edges){nbr.get(e.a.id).add(e.b.id);nbr.get(e.b.id).add(e.a.id);}
+  V.querySelector('#g-count').textContent=`${nodes.length} 节点 · ${edges.length} 条跳线`;
+
+  const cv=V.querySelector('#gx'),box=V.querySelector('#graphbox');
+  const tip=V.querySelector('#g-tip'),card=V.querySelector('#g-card');
+  const dpr=devicePixelRatio||1;let W=0,H=0;
+  const cam={x:0,y:0,k:1};
+  function fit(){W=box.clientWidth;H=box.clientHeight;cv.width=W*dpr;cv.height=H*dpr;}
+  fit();
+  function onRz(){if(!box.isConnected){removeEventListener('resize',onRz);return}fit();heat(0.5)}
+  addEventListener('resize',onRz);
+  const S=(wx,wy)=>[W/2+(wx+cam.x)*cam.k,H/2+(wy+cam.y)*cam.k];
+  const Ws=(sx,sy)=>[(sx-W/2)/cam.k-cam.x,(sy-H/2)/cam.k-cam.y];
+
+  /* --- 物理 --- */
+  let alpha=1;
+  const heat=a=>{alpha=Math.max(alpha,a);if(!ticking)tick()};
+  function step(){
+    alpha*=0.986;if(alpha<0.015)alpha=0;
+    if(!alpha)return;
+    for(const e of edges){
+      const d=Math.hypot(e.b.x-e.a.x,e.b.y-e.a.y)||1;
+      const want=e.kind==='talked'?Math.max(95,215-9*Math.sqrt(e.w)):e.kind==='topic'?255:70;
+      const f=(d-want)/d*alpha*(e.kind==='talked'?0.055:0.035);
+      const fx=(e.b.x-e.a.x)*f,fy=(e.b.y-e.a.y)*f;
+      if(e.a.type!=='me'){e.a.vx+=fx;e.a.vy+=fy}
+      if(e.b.type!=='me'){e.b.vx-=fx;e.b.vy-=fy}
+    }
+    for(let i=0;i<nodes.length;i++){const a=nodes[i];
+      for(let j=i+1;j<nodes.length;j++){const b=nodes[j];
+        let dx=b.x-a.x,dy=b.y-a.y,d2=dx*dx+dy*dy;
+        if(d2>160000||d2<1)continue;
+        const d=Math.sqrt(d2),f=1700*alpha/d2/d;
+        const fx=dx*f,fy=dy*f;
+        a.vx-=fx;a.vy-=fy;b.vx+=fx;b.vy+=fy;
+      }}
+    for(const n of nodes){
+      if(n.type==='me'){n.x=0;n.y=0;continue}
+      n.vx-=n.x*(n.type==='topic'?0.0016:0.0032)*alpha*10;
+      n.vy-=n.y*(n.type==='topic'?0.0016:0.0032)*alpha*10;
+      if(n.fx!=null){n.x=n.fx;n.y=n.fy;n.vx=n.vy=0;continue}
+      n.vx*=0.82;n.vy*=0.82;n.x+=n.vx;n.y+=n.vy;
+    }
+  }
+
+  /* --- 绘制 --- */
+  let hover=null,selected=null,pulseT=0,ticking=false;
+  function curve(e){ // 弯曲控制点：固定哈希决定弯向
+    const mx=(e.a.x+e.b.x)/2,my=(e.a.y+e.b.y)/2;
+    const dx=e.b.x-e.a.x,dy=e.b.y-e.a.y,d=Math.hypot(dx,dy)||1;
+    const h=(parseInt(e.a.id,10)*7+parseInt(e.b.id,10)*13)%2?1:-1;
+    const off=Math.min(34,d*0.13)*h;
+    return [mx-dy/d*off,my+dx/d*off];
+  }
+  function draw(){
+    ctx0();
+    for(const e of edges){
+      const focus=hover||selected;
+      const inSet=focus&&(e.a===focus||e.b===focus);
+      const dim=focus&&!inSet;
+      let al=inSet?0.95:dim?0.07:0.34;
+      const [cx1,cy1]=curve(e);
+      const p0=S(e.a.x,e.a.y),p1=S(cx1,cy1),p2=S(e.b.x,e.b.y);
+      ctx.beginPath();ctx.moveTo(...p0);ctx.quadraticCurveTo(...p1,...p2);
+      if(e.kind==='talked'){
+        const grd=ctx.createLinearGradient(p0[0],p0[1],p2[0],p2[1]);
+        const ca=hexA(COL.me,al),cb=hexA(COL.contact,al);
+        if(e.a.type==='me'){grd.addColorStop(0,ca);grd.addColorStop(1,cb)}
+        else{grd.addColorStop(0,cb);grd.addColorStop(1,ca)}
+        ctx.strokeStyle=grd;
+      }else ctx.strokeStyle=hexA(e.kind==='involves'?COL.event:COL.topic,al*0.8);
+      ctx.lineWidth=Math.max(0.5,(0.5+Math.log2(1+e.w)*0.75))*cam.k;
+      ctx.stroke();
+      if(inSet&&!reduceMotion){ // 信号光点沿跳线行进
+        const t=(pulseT*(0.4+Math.min(1.4,Math.log2(1+e.w)*0.3)))%1;
+        const q=bq(p0,p1,p2,t);
+        ctx.beginPath();ctx.arc(q[0],q[1],2.6*cam.k+1,0,7);
+        ctx.fillStyle=e.kind==='talked'?COL.me:COL.event;ctx.globalAlpha=0.9;ctx.fill();ctx.globalAlpha=1;
+      }
+    }
+    for(const n of nodes){
+      const [x,y]=S(n.x,n.y);
+      const focus=hover||selected;
+      const isF=focus&&n===focus;
+      const isNb=focus&&nbr.get(focus.id).has(n.id);
+      const dim=focus&&!isF&&!isNb;
+      const r=n.r*cam.k;
+      if(x<-40||x>W+40||y<-40||y>H+40)continue;
+      if(n.type==='me'){ // 总机呼吸光晕（唯一常驻动效）
+        const breathe=reduceMotion?0:Math.sin(pulseT*Math.PI*2)*3;
+        const gl=ctx.createRadialGradient(x,y,r*0.4,x,y,r*2.6+breathe*cam.k);
+        gl.addColorStop(0,hexA(COL.me,dim?0.12:0.5));gl.addColorStop(1,hexA(COL.me,0));
+        ctx.fillStyle=gl;ctx.beginPath();ctx.arc(x,y,r*2.6+breathe*cam.k,0,7);ctx.fill();
+      }else if((isF||isNb)&&cam.k>0.5){
+        ctx.fillStyle=hexA(COL[n.type]||'#888',0.16);
+        ctx.beginPath();ctx.arc(x,y,r+5,0,7);ctx.fill();
+      }
+      ctx.globalAlpha=dim?0.16:1;
+      ctx.fillStyle=COL[n.type]||'#888';
+      if(n.type==='event'){ctx.save();ctx.translate(x,y);ctx.rotate(Math.PI/4);
+        ctx.fillRect(-r,-r,r*2,r*2);ctx.restore();}
+      else if(n.type==='topic'){ctx.globalAlpha=dim?0.12:0.55;
+        ctx.beginPath();ctx.arc(x,y,r,0,7);ctx.fill();}
+      else{ctx.beginPath();ctx.arc(x,y,r,0,7);ctx.fill();}
+      if(n===selected){ctx.strokeStyle='#e9e6df';ctx.lineWidth=1.5;
+        ctx.beginPath();ctx.arc(x,y,r+4,0,7);ctx.stroke();}
+      const showLab=n.type==='me'||isF||isNb||(n.type==='contact'&&cam.k*n.r>9);
+      if(showLab){
+        ctx.font=(n.type==='me'?'700 13px ':'11px ')+"'Space Grotesk','Microsoft YaHei'";
+        ctx.textAlign='center';
+        ctx.fillStyle=dim?'#5c6067':(n.type==='me'?'#e8a33d':'#cfd3d9');
+        ctx.fillText(n.label,x,y+r+13);
+      }
+      ctx.globalAlpha=1;
+    }
+  }
+  const ctx=cv.getContext('2d');
+  function ctx0(){ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,W,H);}
+  const hexA=(h,a)=>{const n=parseInt(h.slice(1),16);
+    return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`};
+  const bq=(p0,p1,p2,t)=>{const m=1-t;
+    return [m*m*p0[0]+2*m*t*p1[0]+t*t*p2[0],m*m*p0[1]+2*m*t*p1[1]+t*t*p2[1]]};
+  function tick(){ticking=true;
+    (function loop(){
+      if(!box.isConnected){ticking=false;return}
+      if(alpha>0)step();
+      if(!reduceMotion)pulseT=(pulseT+0.0035)%1;
+      draw();
+      ticking=alpha>0||hover||selected||!reduceMotion;
+      if(ticking)requestAnimationFrame(loop);})();}
+
+  /* --- 交互 --- */
+  function pick(sx,sy){const [wx,wy]=Ws(sx,sy);
+    for(let i=nodes.length-1;i>=0;i--){const n=nodes[i];
+      const d=Math.hypot(n.x-wx,n.y-wy);if(d<=n.r+6/cam.k)return n;}
+    return null;}
+  let drag=null,pan=null,moved=0;
+  cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);moved=0;
+    const n=pick(e.offsetX,e.offsetY);
+    if(n){drag=n;n.fx=n.x;n.fy=n.y;}else pan={x:e.offsetX,y:e.offsetY,cx:cam.x,cy:cam.y};
+    cv.classList.add('dragging')});
+  cv.addEventListener('pointermove',e=>{moved++;
+    if(drag){const [wx,wy]=Ws(e.offsetX,e.offsetY);drag.fx=wx;drag.fy=wy;heat(0.25);}
+    else if(pan){cam.x=pan.cx+(e.offsetX-pan.x)/cam.k;cam.y=pan.cy+(e.offsetY-pan.y)/cam.k;}
+    else{hover=pick(e.offsetX,e.offsetY);cv.style.cursor=hover?'pointer':'grab';
+      tip.style.opacity=hover?1:0;
+      if(hover){tip.style.left=(e.offsetX+14)+'px';tip.style.top=(e.offsetY-8)+'px';
+        tip.textContent=hover.type==='me'?'我（总机）':`${hover.label}${hover.w?' · '+hover.w+' 通':''}`;}
+      if(hover||!selected)heat(0.001);}});
+  cv.addEventListener('pointerup',e=>{cv.classList.remove('dragging');
+    if(drag){if(moved<3){select(drag)}drag.fx=drag.fy=null;drag=null;}
+    else if(pan){if(moved<3){select(null)}pan=null;}
+    heat(0.05)});
+  cv.addEventListener('dblclick',e=>{const n=pick(e.offsetX,e.offsetY);if(!n)return;
+    if(n.type==='contact'){qp={page:1,size:25,contact:n.label};cur='calls';renderNav();calls();}
+    else if(n.type==='event'&&n.call_id){qp={page:1,size:25};cur='calls';renderNav();calls();setTimeout(()=>detail(n.call_id),150);}
+    else if(n.type==='topic'){qp={page:1,size:25,q:n.label};cur='calls';renderNav();calls();}});
+  cv.addEventListener('wheel',e=>{e.preventDefault();
+    const [wx,wy]=Ws(e.offsetX,e.offsetY);
+    cam.k=Math.min(4,Math.max(0.3,cam.k*Math.exp(-e.deltaY*0.0012)));
+    cam.x=(e.offsetX-W/2)/cam.k-wx;
+    cam.y=(e.offsetY-H/2)/cam.k-wy;},{passive:false});
+  V.querySelector('#greset').onclick=()=>{cam.x=0;cam.y=0;cam.k=1;heat(0.3)};
+  V.querySelector('#gsearch').onkeydown=e=>{if(e.key!=='Enter')return;
+    const t=e.target.value.trim();
+    const n=nodes.find(x=>x.label&&x.label.includes(t));
+    if(n){select(n);cam.k=Math.max(cam.k,1.3);cam.x=-n.x;cam.y=-n.y;heat(0.02);}};
+
+  function select(n){selected=n;
+    if(!n){card.classList.remove('show');return}
+    let kv='';
+    if(n.type==='contact'){
+      const evs=edges.filter(e=>e.kind==='involves'&&(e.a===n||e.b===n)).length;
+      kv=`<div class="kv">与我有 <b>${n.w||'—'}</b> 通通话${n.t?` · 最近 <b>${fmt(String(n.t)).slice(0,10)}</b>`:''}</div>
+        <div class="kv">牵涉事件 <b>${evs}</b> 个</div>
+        <button class="btn" id="gc1">找这人的通话</button>`;
+    }else if(n.type==='me'){
+      kv=`<div class="kv">总机 · 关系枢纽，双击他人节点可跳检索</div>`;
+    }else if(n.type==='event'){
+      kv=`<div class="kv">${n.t?fmt(String(n.t)).slice(0,16):''}</div>
+        ${n.call_id?'<button class="btn" id="gc1">回到那通电话</button>':''}`;
+    }else{
+      kv=`<div class="kv">话题标签</div><button class="btn" id="gc1">搜含此话题的通话</button>`;
+    }
+    card.innerHTML=`<div class="nm" style="color:${COL[n.type]||'#fff'}">${esc(n.label)}</div>${kv}`;
+    card.classList.add('show');
+    const b=card.querySelector('#gc1');
+    if(b)b.onclick=()=>{
+      if(n.type==='contact'){qp={page:1,size:25,contact:n.label};cur='calls';renderNav();calls()}
+      else if(n.type==='event'){qp={page:1,size:25};cur='calls';renderNav();calls();setTimeout(()=>detail(n.call_id),150)}
+      else{qp={page:1,size:25,q:n.label};cur='calls';renderNav();calls()}};
+    heat(0.001);}
+
+  /* 事件需要 call_id/time（node 本身无，从边补） */
+  for(const e of edges){if(e.kind==='involves'){
+    const ev=e.a.type==='event'?e.a:e.b.type==='event'?e.b:null;
+    if(ev){if(e.call_id&&!ev.call_id)ev.call_id=e.call_id;if(e.time&&!ev.t)ev.t=e.time;}}}
+
+  if(nodes.length){heat(1)}
+  else{V.querySelector('#g-count').textContent='还没有图谱数据：等转写+标注+摘要跑完后运行 pipeline.py graph';}
+
   const evs=await J('/api/events?limit=15');
   V.querySelector('#evlist').innerHTML=evs.map(e=>`<div class="evrow"><span class="t">${fmt(e.event_time)}</span><b>${esc(e.title)}</b> <span class="muted">${esc(e.participants||'')}</span></div>`).join('')
     ||'<div class="muted" style="padding:16px 4px">摘要跑完后，这里会按时间列出你经历的事。</div>';
