@@ -134,6 +134,27 @@ def cmd_web(cfg, args):
     uvicorn.run(server.app, host=cfg["web"]["host"], port=cfg["web"]["port"])
 
 
+_LOCKS = []
+
+
+def _acquire_lock(name: str) -> bool:
+    """Per-stage single-instance guard (Windows). Keeps the auto-ingest loop and
+    a manual run from double-processing the same backlog."""
+    import os
+    if os.name != "nt":
+        return True
+    import msvcrt
+    Path("data").mkdir(exist_ok=True)
+    f = open(f"data/lock_{name}.lock", "a+")
+    try:
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        f.close()
+        return False
+    _LOCKS.append(f)  # keep handle open for process lifetime
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -151,6 +172,10 @@ def main():
     args = ap.parse_args()
 
     cfg = config.load()
+    if args.command in ("run", "summarize", "align", "graph") and not args.jobs:
+        if not _acquire_lock(args.command):
+            print(f"[{args.command}] 已有实例在跑（data/lock_{args.command}.lock 被占），本实例跳过")
+            return
     fn = {
         "scan": cmd_scan, "report": cmd_report, "run": cmd_run, "refine": cmd_refine,
         "align": cmd_align, "enroll-me": cmd_enroll_me, "summarize": cmd_summarize,
