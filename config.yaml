@@ -50,6 +50,8 @@ asr:
   # 说话人分离（CAM++ 声纹）
   spk_model: "cam++"
   device: "cuda"        # cuda / cpu（显存 6G，SenseVoice+CAM++ 足够；OOM 再改 cpu）
+  # 并行转写进程数（每个进程独立加载模型到 GPU；6G 显存下 2 为安全值，OOM 改 1）
+  workers: 2
   # 每条通话最多分离的说话人数（双人通话=2）
   num_speakers: 2
   # 声纹相似度阈值：判定「是否为我」的余弦相似度下限

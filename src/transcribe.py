@@ -15,20 +15,12 @@ def _log(msg):
     print(msg, flush=True)
 
 
-def run_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0, verbose: bool = True):
-    asrcfg = cfg["asr"]
-    eng = FunAsrEngine(cfg)
-    q = "SELECT id,path FROM calls WHERE status IN ('pending','normalized') ORDER BY id"
-    if limit:
-        q += f" LIMIT {int(limit)}"
-    rows = conn.execute(q).fetchall()
-    _log(f"待处理通话: {len(rows)}")
-    t0 = time.time()
+def _process_rows(conn, eng, cfg, rows, t0, verbose=True):
     ok = fail = 0
     for i, r in enumerate(rows, 1):
         cid = r["id"]
         try:
-            dt = process_one(conn, eng, cfg, r["id"], r["path"])
+            dt = process_one(conn, eng, cfg, cid, r["path"])
             ok += 1
             if verbose:
                 el = time.time() - t0
@@ -39,7 +31,75 @@ def run_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0, verbose: bo
                          (f"{type(e).__name__}: {e}"[:500], db.now(), cid))
             conn.commit()
             _log(f"[{i}/{len(rows)}] call#{cid} FAILED: {e}")
+    return ok, fail
+
+
+def run_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0, verbose: bool = True):
+    eng = FunAsrEngine(cfg)
+    q = "SELECT id,path FROM calls WHERE status IN ('pending','normalized') ORDER BY id"
+    if limit:
+        q += f" LIMIT {int(limit)}"
+    rows = conn.execute(q).fetchall()
+    _log(f"待处理通话: {len(rows)}")
+    t0 = time.time()
+    ok, fail = _process_rows(conn, eng, cfg, rows, t0, verbose)
     _log(f"完成 {ok}，失败 {fail}，用时 {time.time()-t0:.0f}s")
+
+
+def run_ids(conn: sqlite3.Connection, cfg: dict, ids: list):
+    """Worker mode: process an explicit list of call ids (spawned by run_parallel)."""
+    rows = conn.execute(
+        f"SELECT id,path FROM calls WHERE id IN ({','.join('?' * len(ids))}) "
+        "AND status IN ('pending','normalized')", ids).fetchall()
+    eng = FunAsrEngine(cfg)
+    t0 = time.time()
+    _log(f"worker {len(ids)} ids -> {len(rows)} to process")
+    ok, fail = _process_rows(conn, eng, cfg, rows, t0)
+    _log(f"worker done {ok}, failed {fail}, {time.time()-t0:.0f}s")
+
+
+def pending_ids(conn, limit: int = 0) -> list:
+    q = "SELECT id FROM calls WHERE status IN ('pending','normalized') ORDER BY id"
+    if limit:
+        q += f" LIMIT {int(limit)}"
+    return [r["id"] for r in conn.execute(q).fetchall()]
+
+
+def run_parallel(cfg: dict, workers: int, limit: int = 0):
+    """Parent: split pending calls round-robin into per-worker job files and
+    spawn `workers` subprocesses (each loads its own model copy on GPU)."""
+    import subprocess, sys, os
+    from pathlib import Path
+    conn = sqlite3.connect(cfg["db_path"], timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    ids = pending_ids(conn, limit)
+    if not ids:
+        _log("无待处理通话")
+        return
+    workers = max(1, min(workers, len(ids)))
+    chunks = [ids[i::workers] for i in range(workers)]
+    work_dir = Path(cfg["work_dir"]); work_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = Path("logs"); logs_dir.mkdir(exist_ok=True)
+    procs = []
+    t0 = time.time()
+    for wi, ch in enumerate(chunks):
+        jf = work_dir / f"run_job_{wi}.json"
+        jf.write_text(json.dumps(ch), encoding="utf-8")
+        logf = open(logs_dir / f"worker_{wi}.log", "w", encoding="utf-8")
+        p = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve().parent.parent / "pipeline.py"),
+             "run", "--jobs", str(jf)],
+            stdout=logf, stderr=subprocess.STDOUT, cwd=str(Path(__file__).resolve().parent.parent))
+        procs.append((p, logf))
+        _log(f"worker#{wi} pid={p.pid} calls={len(ch)} log=logs/worker_{wi}.log")
+    rc = 0
+    for p, logf in procs:
+        rc |= p.wait()
+        logf.close()
+    _log(f"全部 worker 结束，用时 {time.time()-t0:.0f}s，exit={rc}")
+    st = conn.execute("SELECT status, COUNT(*) FROM calls GROUP BY status").fetchall()
+    _log("状态分布: " + str({r[0]: r[1] for r in st}))
 
 
 def process_one(conn, eng: FunAsrEngine, cfg, cid: int, path: str) -> float:

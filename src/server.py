@@ -23,7 +23,10 @@ def cfg():
 
 
 def conn():
-    return sqlite3.connect(cfg()["db_path"])
+    c = sqlite3.connect(cfg()["db_path"], timeout=30)
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA busy_timeout=30000")
+    return c
 
 
 def dict_rows(rows):

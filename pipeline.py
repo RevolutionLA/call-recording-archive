@@ -65,7 +65,15 @@ def cmd_report(cfg, args):
 def cmd_run(cfg, args):
     conn = get_conn(cfg)
     from src import transcribe
-    transcribe.run_pending(conn, cfg, limit=args.limit, verbose=not args.quiet)
+    if args.jobs:
+        ids = json.loads(Path(args.jobs).read_text(encoding="utf-8"))
+        transcribe.run_ids(conn, cfg, ids)
+    else:
+        workers = args.workers if args.workers else int(cfg["asr"].get("workers", 1))
+        if workers > 1:
+            transcribe.run_parallel(cfg, workers=workers, limit=args.limit)
+        else:
+            transcribe.run_pending(conn, cfg, limit=args.limit, verbose=not args.quiet)
 
 
 def cmd_refine(cfg, args):
@@ -132,6 +140,9 @@ def main():
     ap.add_argument("command", choices=["scan", "report", "run", "refine", "align",
                                         "enroll-me", "summarize", "voices", "graph", "web"])
     ap.add_argument("--limit", type=int, default=0, help="最多处理 N 通（0=全部）")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="run 用：并行转写进程数（0=config asr.workers，1=串行）")
+    ap.add_argument("--jobs", default="", help="run 内部用：worker 任务 id 列表 JSON 文件")
     ap.add_argument("--path", default="", help="scan 用：库名称（默认按 config 的 recordings_dir 建「本机」库）")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("wav", nargs="?", help="enroll-me 用：16k 单声道 wav 路径")
