@@ -1,12 +1,37 @@
-> **CallRec — 通话录音档案库**
-> 把散落的手机通话录音，变成一台能全文检索、按人按时间统计、看关系图谱、还能导出音色克隆的本地话务台。
-> **100% offline. Your calls never leave your machine.**
+<div align="center">
 
-![status](https://img.shields.io/badge/全部本地-e8a33d?style=flat-square)
-![engine](https://img.shields.io/badge/FunASR-SenseVoice-63b3a5?style=flat-square)
-![privacy](https://img.shields.io/badge/零上云-63b3a5?style=flat-square)
+# 📞 CallRec · 通话录音档案库
+
+**把散落的手机通话录音，变成一台能全文检索、按人按时间统计、看关系图谱、还能导出音色克隆的本地话务台。**
+
+[![license: MIT](https://img.shields.io/badge/license-MIT-63b3a5?style=flat-square)](LICENSE)
+![全部本地](https://img.shields.io/badge/全部本地-e8a33d?style=flat-square)
+![零上云](https://img.shields.io/badge/零上云-63b3a5?style=flat-square)
+[![engine: FunASR](https://img.shields.io/badge/engine-FunASR%20%C2%B7%20SenseVoice-7f8ea3?style=flat-square)](https://github.com/modelscope/FunASR)
+![PRs Welcome](https://img.shields.io/badge/PRs-welcome-63b3a5?style=flat-square)
+
+**100% offline — your calls never leave your machine.**
+
+觉得有用？点个 ⭐ 是对作者最直接的鼓励。
+
+</div>
 
 ---
+
+## 目录
+
+- [为什么做这个](#为什么做这个)
+- [它能做什么](#它能做什么)
+- [快速开始](#快速开始)
+- [架构](#架构)
+- [技术栈](#技术栈)
+- [设计取向](#设计取向)
+- [Roadmap](#roadmap)
+- [截图](#截图)
+- [致谢](#致谢)
+- [引用](#引用)
+- [许可与免责](#许可与免责)
+- [联系与贡献](#联系与贡献)
 
 ## 为什么做这个
 
@@ -96,15 +121,40 @@ graph + voices + web 驾驶舱（FastAPI + 自绘 Canvas / ECharts，全本地�
 
 > 深夜话务台驾驶舱 · 关系图谱 · 通话详情逐段高亮（`docs/screenshots/`）
 
+## 致谢
+
+- [FunASR](https://github.com/modelscope/FunASR) / [ModelScope](https://modelscope.cn)：SenseVoiceSmall、fsmn-vad、ct-punc、CAM++ 全链路模型。
+- [Ollama](https://ollama.com)：让摘要这一步也不必离开本机。
+- [Apache ECharts](https://echarts.apache.org) 与 [Space Grotesk](https://fontsource.org/fonts/space-grotesk)：驾驶舱的图表与数字排印（均随仓库本地分发，零 CDN）。
+
+## 引用
+
+在论文或项目中引用 CallRec：
+
+```bibtex
+@software{callrec2026,
+  title  = {CallRec: An Fully Offline Archive for Phone Call Recordings},
+  author = {RevolutionLA},
+  year   = {2026},
+  url    = {https://github.com/RevolutionLA/call-recording-archive},
+  license = {MIT}
+}
+```
+
 ## 许可与免责
 
+- 本项目以 **MIT** 协议开源（见 [LICENSE](LICENSE)）。
 - 仅用于处理**你本人有权访问的通话录音**。请遵守你所在司法区关于通话录音与隐私的法律（多方同意地区务必先取得授权）。
 - 本项目按「现状」提供，不构成任何法律建议。
 
-## 贡献
+## 联系与贡献
 
 Issues 和 PR 欢迎。改流水线请保持「断点续跑」和「数据不出机器」两条底线。
 
+> 如果这个项目帮你找回了某通忘了说过什么的话，欢迎在 Discussions 里讲你的故事——匿名也行，这里本来就不联网。😊
+
 ---
 
+<div align="center">
 <sub>Made for people who'd rather keep their conversations at home. 🌙</sub>
+</div>
