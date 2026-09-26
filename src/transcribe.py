@@ -15,22 +15,45 @@ def _log(msg):
     print(msg, flush=True)
 
 
+def _is_mem_error(msg: str) -> bool:
+    return any(k in msg for k in ("1455", "MemoryError", "out of memory", "enforce fail"))
+
+
 def _process_rows(conn, eng, cfg, rows, t0, verbose=True):
+    """Process rows; if memory failures come back-to-back the machine is
+    exhausted — un-mark those calls and exit 75 so the keepalive retries later
+    instead of burning the whole queue into 'error'."""
     ok = fail = 0
+    mem_streak = 0
+    mem_failed_ids = []
     for i, r in enumerate(rows, 1):
         cid = r["id"]
         try:
             dt = process_one(conn, eng, cfg, cid, r["path"])
             ok += 1
+            mem_streak = 0
             if verbose:
                 el = time.time() - t0
                 _log(f"[{i}/{len(rows)}] call#{cid} ok {dt}s audio, {el:.0f}s elapsed")
         except Exception as e:
+            msg = f"{type(e).__name__}: {e}"
             fail += 1
             conn.execute("UPDATE calls SET status='error',error=?,updated_at=? WHERE id=?",
-                         (f"{type(e).__name__}: {e}"[:500], db.now(), cid))
+                         (msg[:500], db.now(), cid))
             conn.commit()
             _log(f"[{i}/{len(rows)}] call#{cid} FAILED: {e}")
+            if _is_mem_error(msg):
+                mem_streak += 1
+                mem_failed_ids.append(cid)
+                if mem_streak >= 6:
+                    conn.execute(
+                        f"UPDATE calls SET status='pending',error=NULL WHERE id IN "
+                        f"({','.join('?' * len(mem_failed_ids))})", mem_failed_ids)
+                    conn.commit()
+                    _log(f"内存连续失败 {mem_streak} 通，已退回 pending；退出等待内存释放 (exit 75)")
+                    raise SystemExit(75)
+            else:
+                mem_streak = 0
     return ok, fail
 
 
