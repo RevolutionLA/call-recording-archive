@@ -1,0 +1,88 @@
+# ============================================================
+# 通话录音档案库 - 全局配置
+# 通话录音目录待用户提供后填入 recordings_dir
+# ============================================================
+
+# 通话录音根目录。用户把录音放进 FunASR 文件夹，默认扫描项目根目录（递归）。
+# 如放到了别处或子文件夹，改成绝对路径即可。
+recordings_dir: "."
+
+# 扫描时排除的目录名（工程自身目录，避免把缓存 wav 当成录音）
+exclude_dirs: ["src", "web", "data", "logs", "scripts", ".git", ".venv", "__pycache__", "docs"]
+
+# 音频工作目录（规范化后的 16k 单声道 wav 缓存）
+work_dir: "data/work"
+
+# 数据库文件
+db_path: "data/archive.db"
+
+# 音色导出目录（供千问 TTS 使用）
+voices_dir: "data/voices"
+
+# 支持的录音扩展名
+audio_extensions: [".mp3", ".wav", ".m4a", ".amr", ".ogg", ".opus", ".flac", ".aac", ".mp4", ".wma", ".3gp", ".silk", ".slk"]
+
+# ---------- 文件名解析 ----------
+# 从通话录音文件名中提取「时间」和「对方身份」。
+# 手机自动录音命名千差万别，这里给出一组候选正则（按顺序尝试），
+# 命名组 name / date / time / phone 会被采纳。用户可依据自己文件名增删。
+filename_patterns:
+  # 2024-01-15 14-30-25 张三 / 张三 2024-01-15 1430
+  - '(?P<date>\d{4}[-_/]\d{1,2}[-_/]\d{1,2})[ _]*(?P<time>\d{1,2}[-_:]?\d{2})?.*?(?P<name>[\u4e00-\u9fa5]{2,4})?'
+  - '(?P<name>[\u4e00-\u9fa5]{2,4})?.*?(?P<date>\d{4}[-_/]\d{1,2}[-_/]\d{1,2})[ _]*(?P<time>\d{1,2}[-_:]?\d{2})?'
+  # 时间戳形式 20240115_143025
+  - '(?P<date>\d{8})[ _]?(?P<time>\d{4,6})'
+  # 电话号码
+  - '(?P<phone>1[3-9]\d{9})'
+# 若文件名解析不到时间，回退到文件修改时间
+fallback_to_mtime: true
+
+# ---------- 运行环境 ----------
+# 复用本机 conda 环境（已装 funasr1.1.9 + torch2.0.1cu118 + fastapi），不再新建 venv
+python_env: "C:/ProgramData/anaconda3/envs/sensevoice/python.exe"
+
+# ---------- ASR / 说话人分离 ----------
+asr:
+  # 使用 FunASR AutoModel 别名；SenseVoiceSmall 本地已缓存
+  model: "iic/SenseVoiceSmall"
+  vad_model: "fsmn-vad"
+  punc_model: "ct-punc"
+  # 说话人分离（CAM++ 声纹）
+  spk_model: "cam++"
+  device: "cuda"        # cuda / cpu（显存 6G，SenseVoice+CAM++ 足够；OOM 再改 cpu）
+  # 每条通话最多分离的说话人数（双人通话=2）
+  num_speakers: 2
+  # 声纹相似度阈值：判定「是否为我」的余弦相似度下限
+  # （电话 8k 音质下：同人约 0.65~0.9，异人约 0.4~0.6）
+  me_threshold: 0.62
+  # 通话内说话人聚类：两方通话强制二分；两簇质心相似度>此值则判为单人
+  cluster_merge_sim: 0.8
+  # 用于自动确定「我」的样本通话数量（取交集最多的说话人）
+  me_enroll_calls: 30
+
+# ---------- 本地 LLM 摘要 ----------
+llm:
+  # OpenAI 兼容端点。Ollama: http://localhost:11434/v1  LM Studio: http://localhost:1234/v1
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  # 本机 Ollama 已有 qwen3.5:2b（摘要主力）；27B 留给交互式深度分析
+  model: "qwen3.5:2b"
+  deep_model: "orcarouter/Qwen3.8-27B-Uncensored:iq2_xxs"
+  temperature: 0.3
+  max_tokens: 1024
+  enabled: true
+
+# ---------- Web ----------
+web:
+  host: "127.0.0.1"
+  port: 8760
+
+# ---------- 网络代理 ----------
+# 注意：ModelScope 国内直连即可（实测走 7890 代理反而 TLS 失败）。
+# 仅在需要访问 GitHub/HF 时把 enabled 改为 true。
+proxy:
+  enabled: false
+  http: "http://127.0.0.1:7890"
+  https: "http://127.0.0.1:7890"
+  # 模型下载优先走 ModelScope 国内源
+  model_hub: "modelscope"

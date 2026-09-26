@@ -1,0 +1,16 @@
+# 数据与音频不入库
+data/
+logs/
+__pycache__/
+*.pyc
+.venv/
+
+# 录音文件（放在项目根目录）
+*.m4a
+*.mp3
+*.wav
+*.amr
+*.ogg
+*.3gp
+*.aac
+*.mp4

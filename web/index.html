@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>通话录音档案库 · 驾驶舱</title>
+<script src="/static/vendor/echarts.min.js"></script>
+<script src="/static/vendor/cytoscape.min.js"></script>
+<style>
+:root{--bg:#0e1420;--panel:#161e2e;--line:#232e45;--txt:#dbe4f3;--dim:#8394ad;--acc:#4f8ff7;--ok:#3ecf8e}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.55 "Microsoft YaHei",system-ui}
+header{display:flex;gap:18px;align-items:center;padding:12px 22px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:9}
+header h1{font-size:17px;margin:0 20px 0 0;white-space:nowrap}
+nav button{background:none;border:1px solid transparent;color:var(--dim);padding:6px 14px;border-radius:8px;cursor:pointer;font-size:14px}
+nav button.on{color:var(--txt);background:#1f2a40;border-color:var(--line)}
+main{padding:20px;max-width:1280px;margin:0 auto}
+.grid{display:grid;gap:14px}.g4{grid-template-columns:repeat(4,1fr)}.g2{grid-template-columns:1fr 1fr}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.kpi b{font-size:26px;display:block;color:#fff}.kpi span{color:var(--dim)}
+.chart{height:280px}h3{margin:2px 0 10px;font-size:15px;color:var(--dim);font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{color:var(--dim);font-weight:600;position:sticky;top:0;background:var(--panel)}
+tr.row:hover{background:#1b2740;cursor:pointer}
+input,select{background:#101827;border:1px solid var(--line);color:var(--txt);padding:7px 10px;border-radius:8px;font-size:13px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;background:#24304a;color:#9db4d8;margin-right:6px}
+.me{background:#173753;color:#7cc1ff}.other{background:#20412c;color:#7fe0a8}
+#seglist{max-height:420px;overflow:auto}
+.seg{margin:6px 0;padding:8px 10px;border-radius:10px;background:#121a2a}
+.seg .t{color:var(--dim);font-size:11px;margin-right:8px}
+audio{width:100%;margin:8px 0}
+.pager{display:flex;gap:10px;align-items:center;color:var(--dim);margin-top:10px}
+.pager button{background:#1f2a40;border:1px solid var(--line);color:var(--txt);padding:4px 12px;border-radius:6px;cursor:pointer}
+#graphbox{height:560px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+.voicecard{display:flex;gap:12px;align-items:center}.voicecard img,.vc{width:52px;height:52px;border-radius:50%;background:#25344f;display:flex;align-items:center;justify-content:center;font-size:20px}
+.muted{color:var(--dim)}#status{margin-left:auto;font-size:12px;color:var(--dim)}
+a{color:var(--acc)}
+</style>
+</head>
+<body>
+<header>
+  <h1>📞 通话录音档案库</h1>
+  <nav id="nav"></nav>
+  <div id="status"></div>
+</header>
+<main id="view"></main>
+<script>
+const V = document.getElementById('view'), nav = document.getElementById('nav');
+const pages = [['dash','驾驶舱'],['calls','通话检索'],['graph','关系图谱'],['voices','音色库']];
+let cur = 'dash';
+function renderNav(){ nav.innerHTML=''; pages.forEach(([k,t])=>{const b=document.createElement('button');b.textContent=t;b.className=cur===k?'on':'';b.onclick=()=>{cur=k;renderNav();P[cur]()};nav.appendChild(b)}) }
+async function J(u){ const r=await fetch(u); if(!r.ok) throw new Error(r.status); return r.json() }
+const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const dur=s=>s==null?'-':(s>=60?Math.floor(s/60)+'分'+Math.round(s%60)+'秒':Math.round(s)+'秒');
+const fmt=ts=>ts?ts.replace('T',' '):'';
+
+/* ---------------- dashboard ---------------- */
+async function dash(){
+  V.innerHTML='<div class="muted">加载中…</div>';
+  const [ov,tl,hm,cts,dh,prog]=await Promise.all([J('/api/overview'),J('/api/stats/timeline?bucket=month'),J('/api/stats/heatmap'),J('/api/stats/contacts?limit=12'),J('/api/stats/duration'),J('/api/progress')]);
+  V.innerHTML=`
+  <div class="grid g4">
+    <div class="card kpi"><b>${ov.total_calls}</b><span>通话总数（已处理 ${ov.done}）</span></div>
+    <div class="card kpi"><b>${ov.contacts}</b><span>联系人（声纹识别）</span></div>
+    <div class="card kpi"><b>${ov.hours}h</b><span>音频总时长</span></div>
+    <div class="card kpi" style="font-size:13px"><b style="font-size:15px">${fmt(ov.first_call)} ~ ${fmt(ov.last_call)}</b><span>时间跨度</span></div>
+  </div>
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card"><h3>每月通话量与分钟数</h3><div id="ch1" class="chart"></div></div>
+    <div class="card"><h3>星期 × 小时 通话热力</h3><div id="ch2" class="chart"></div></div>
+    <div class="card"><h3>Top 联系人（按通话次数）</h3><div id="ch3" class="chart"></div></div>
+    <div class="card"><h3>通话时长分布</h3><div id="ch4" class="chart"></div></div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>处理状态</h3><span class="muted">${Object.entries(prog).map(([k,v])=>`<span class="tag">${k}:${v}</span>`).join('')}</span></div>`;
+  const mk=id=>echarts.init(document.getElementById(id),null,{renderer:'canvas'});
+  const axis={axisLine:{lineStyle:{color:'#33415e'}},axisLabel:{color:'#8394ad'}};
+  mk('ch1').setOption({backgroundColor:'transparent',tooltip:{trigger:'axis'},legend:{textStyle:{color:'#8394ad'}},
+    xAxis:{type:'category',data:tl.map(x=>x.bucket),...axis},yAxis:[{type:'value',...axis},{type:'value',...axis}],
+    series:[{name:'通话数',type:'bar',data:tl.map(x=>x.calls),itemStyle:{color:'#4f8ff7'}},
+            {name:'分钟',type:'line',yAxisIndex:1,data:tl.map(x=>x.minutes),itemStyle:{color:'#3ecf8e'}}]});
+  const wd=['周日','周一','周二','周三','周四','周五','周六'];
+  const data=[];for(let i=0;i<7;i++)for(let h=0;h<24;h++)data.push([h,i,hm[i][h]]);
+  mk('ch2').setOption({backgroundColor:'transparent',tooltip:{},grid:{left:44,right:10,top:10,bottom:56},
+    xAxis:{type:'category',data:[...Array(24).keys()],...axis},yAxis:{type:'category',data:wd,...axis},
+    visualMap:{min:0,max:Math.max(1,...hm.flat()),calculable:true,orient:'horizontal',left:'center',bottom:0,
+      inRange:{color:['#16203a','#2b5fa8','#4f8ff7','#f7c948']},textStyle:{color:'#8394ad'}},
+    series:[{type:'heatmap',data}]})
+  mk('ch3').setOption({backgroundColor:'transparent',tooltip:{},grid:{left:110,right:20,top:10,bottom:24},
+    xAxis:{type:'value',...axis},yAxis:{type:'category',data:cts.map(x=>x.name).reverse(),...axis},
+    series:[{type:'bar',data:cts.map(x=>x.calls).reverse(),itemStyle:{color:'#8f6ff7'},label:{show:true,position:'right',color:'#8394ad'}}]});
+  mk('ch4').setOption({backgroundColor:'transparent',tooltip:{},grid:{left:44,right:10,top:10,bottom:28},
+    xAxis:{type:'category',data:dh.map(x=>x.label),...axis},yAxis:{type:'value',...axis},
+    series:[{type:'bar',data:dh.map(x=>x.count),itemStyle:{color:'#3ecf8e'}}]});
+}
+
+/* ---------------- call list & detail ---------------- */
+let qp={page:1,size:25};
+async function calls(){
+  V.innerHTML=`<div class="bar">
+   <input id="q" placeholder="全文搜索（说话内容）" style="width:240px" value="${esc(qp.q||'')}">
+   <input id="ct" placeholder="联系人/号码" style="width:150px" value="${esc(qp.contact||'')}">
+   <input id="f" type="date" value="${esc(qp.from||'')}"><span class="muted">至</span><input id="t" type="date" value="${esc(qp.to||'')}">
+   <select id="who"><option value="">谁不说</option><option value="me"${qp.who=='me'?' selected':''}>包含「我」的段</option><option value="other"${qp.who=='other'?' selected':''}>包含「对方」的段</option></select>
+   <button class="on" id="go" style="background:#1f2a40;border:1px solid var(--line);color:var(--txt);padding:7px 16px;border-radius:8px;cursor:pointer">查询</button>
+   </div><div id="list" class="card">输入条件查询上万个通话…</div>`;
+  const go=()=>{qp={page:1,size:25,q:V.querySelector('#q').value,contact:V.querySelector('#ct').value,
+    from:V.querySelector('#f').value,to:V.querySelector('#t').value,who:V.querySelector('#who').value};render()};
+  V.querySelector('#go').onclick=go; V.querySelectorAll('input').forEach(i=>i.onkeydown=e=>{if(e.key==='Enter')go()});
+  async function render(){
+    const p=new URLSearchParams(Object.entries(qp).filter(x=>x[1]!==''));
+    const d=await J('/api/calls?'+p);
+    const el=V.querySelector('#list');
+    el.innerHTML=`<table><tr><th>时间</th><th>联系人</th><th>时长</th><th>状态</th><th>摘要</th><th>文件名</th></tr>`+
+      d.items.map(c=>`<tr class="row" data-id="${c.id}"><td>${fmt(c.call_time)}</td><td>${esc(c.contact||c.contact_hint||c.phone||'-')}</td>
+      <td>${dur(c.duration_sec)}</td><td><span class="tag ${c.status==='error'?'other':''}">${c.status}</span></td>
+      <td style="max-width:340px">${esc((c.summary||'').slice(0,60))}</td><td class="muted" style="max-width:220px;overflow:hidden">${esc(c.filename)}</td></tr>`).join('')+
+      `</table><div class="pager"><button id="prev">上一页</button><span>${d.page} / 共 ${Math.max(1,Math.ceil(d.total/d.size))} 页 · ${d.total} 通</span><button id="next">下一页</button></div>`;
+    el.querySelectorAll('tr.row').forEach(tr=>tr.onclick=()=>detail(+tr.dataset.id));
+    el.querySelector('#prev').onclick=()=>{if(qp.page>1){qp.page--;render()}};
+    el.querySelector('#next').onclick=()=>{if(qp.page*qp.size<d.total){qp.page++;render()}};
+  }
+  render();
+}
+async function detail(id){
+  const c=await J('/api/calls/'+id);
+  const el=document.createElement('div');
+  el.className='card'; el.style.marginTop='14px';
+  let ana={}; try{ana=JSON.parse(c.analysis||'{}')}catch(e){}
+  el.innerHTML=`<div class="bar"><b style="font-size:16px">${fmt(c.call_time)} · ${esc(c.contact_hint||c.phone||c.filename)}</b>
+    <span class="muted">时长 ${dur(c.duration_sec)} · 状态 ${c.status}</span>
+    <button id="close" style="margin-left:auto;background:#1f2a40;border:1px solid var(--line);color:var(--txt);padding:4px 12px;border-radius:6px;cursor:pointer">✕ 关闭</button></div>
+    <audio controls src="/api/media/${id}"></audio>
+    ${c.summary?`<div style="background:#121a2a;padding:10px 12px;border-radius:10px;margin:6px 0"><b>📝 摘要</b><br>${esc(c.summary)}
+      ${(ana.topics||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}
+      ${(ana.todos||[]).length?`<br><b>待办：</b>${(ana.todos||[]).map(t=>'· '+esc(t)).join('<br>')}`:''}</div>`:''}
+    <div id="seglist">${(c.segments||[]).map(s=>`<div class="seg"><span class="tag ${s.who}">${s.who=='me'?'我':(esc(s.contact_name)||s.who)}</span><span class="t">${new Date(s.start_ms).toISOString().substr(11,8)}</span>${esc(s.text_zh)}</div>`).join('')}</div>`;
+  V.appendChild(el); el.scrollIntoView({behavior:'smooth'});
+  el.querySelector('#close').onclick=()=>el.remove();
+}
+
+/* ---------------- graph ---------------- */
+async function graph(){
+  V.innerHTML=`<div class="bar"><input id="gsince" type="date"><span class="muted">至</span><input id="guntil" type="date">
+   <button id="ggo" style="background:#1f2a40;border:1px solid var(--line);color:var(--txt);padding:7px 16px;border-radius:8px;cursor:pointer">筛选时间</button>
+   <span class="muted">节点：我=蓝 · 联系人=绿 · 事件=黄 · 话题=紫。双击联系人查看其通话。</span></div>
+   <div id="graphbox"></div><div class="card" style="margin-top:14px"><h3>最近事件（按时间）</h3><div id="evlist"></div></div>`;
+  const q=new URLSearchParams();
+  const s=V.querySelector('#gsince').value,u=V.querySelector('#guntil').value;
+  if(s)q.set('since',s);if(u)q.set('until',u+'T23:59:59');
+  const g=await J('/api/graph?'+q);
+  const cy=cytoscape({container:V.querySelector('#graphbox'),
+    elements:[...g.nodes.map(n=>({data:n.data})),...g.edges.map(e=>({data:e.data}))],
+    style:[
+      {selector:'node',style:{label:'data(label)','color':'#dbe4f3','font-size':'11px','text-wrap':'wrap','text-max-width':'90px','background-color':'#54687f'}},
+      {selector:'node[type="me"]',style:{'background-color':'#4f8ff7','font-size':'15px','width':46,'height':46}},
+      {selector:'node[type="contact"]',style:{'background-color':'#3ecf8e','width':'mapData(deg,0,40,22,52)','height':'mapData(deg,0,40,22,52)'}},
+      {selector:'node[type="event"]',style:{'background-color':'#f7c948','shape':'round-rectangle','color':'#0e1420','font-weight':'bold'}},
+      {selector:'node[type="topic"]',style:{'background-color':'#8f6ff7','shape':'diamond','font-size':'10px'}},
+      {selector:'edge',style:{width:'.data(weight)','line-color':'#33415e','curve-style':'bezier','target-arrow-shape':'none'}},
+      {selector:'edge[kind="talked"]',style:{'line-color':'#4f8ff7'}},
+      {selector:'edge[kind="involves"]',style:{'line-color':'#f7c948'}}],
+    layout:{name:'cose',animate:false}});
+  cy.on('dbltap','node[type="contact"]',async ev=>{
+    const name=ev.target.data('label');
+    V.querySelector('#q')&&''; qp.contact=name; qp.page=1; cur='calls'; renderNav(); calls();
+    setTimeout(()=>{const i=document.getElementById('ct');if(i){i.value=name;document.getElementById('go').click()}},80);
+  });
+  const evs=await J('/api/events?limit=15');
+  V.querySelector('#evlist').innerHTML=evs.map(e=>`<div style="padding:6px 0;border-bottom:1px solid var(--line)"><span class="muted">${fmt(e.event_time)}</span> <b>${esc(e.title)}</b> <span class="muted">${esc(e.participants||'')}</span> <a href="#" onclick="cur='calls';renderNav();calls();return false">↗</a></div>`).join('')||'<span class="muted">运行 summarize + graph 后生成事件</span>';
+}
+
+/* ---------------- voices ---------------- */
+async function voices(){
+  const vs=await J('/api/voices');
+  V.innerHTML=`<div class="card"><h3>音色文件（供千问 TTS / Qwen3-TTS 声音克隆：每段 6~18 秒干净人声 + 对应文本）</h3>
+  ${vs.map(v=>`<div class="voicecard" style="padding:10px 0;border-bottom:1px solid var(--line)">
+   <div class="vc">${esc((v.speaker||'?')[0])}</div><div style="flex:1"><b>${esc(v.speaker)}</b> <span class="muted">${v.clips.length} 段 / ${v.total_sec}s — 目录 data/voices/${esc(v.dir)}</span>
+   ${v.clips.map(c=>`<div style="margin-top:6px"><audio controls preload="none" src="${c.url}" style="width:320px;height:32px"></audio> <span class="muted">${esc(c.text)}</span> <span class="tag">${c.duration_sec}s</span></div>`).join('')}</div></div>`).join('')
+   ||'<span class="muted">还没有音色文件。跑完 run/align 后执行 <b>python pipeline.py voices</b></span>'}</div>`;
+}
+
+const P={dash,calls,graph,voices};
+renderNav(); P.dash();
+setInterval(async()=>{try{const p=await J('/api/progress');
+  document.getElementById('status').textContent=Object.entries(p).map(([k,v])=>`${k}:${v}`).join(' · ')}catch(e){}},5000);
+</script>
+</body>
+</html>
