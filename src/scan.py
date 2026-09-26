@@ -78,6 +78,24 @@ def scan(conn: sqlite3.Connection, recordings_dir: str, extensions: list,
     return {"added": added, "updated": updated, "unchanged": unchanged}
 
 
+def refresh_hints(conn: sqlite3.Connection, extra_patterns: Optional[list] = None) -> dict:
+    """Re-parse every filename with the current rules and write the identity columns
+    back. `scan` skips rows whose size is unchanged, so parser fixes never reach rows
+    already in the DB — this is that backfill. Only fills/corrects, never blanks."""
+    changed = 0
+    cols = (("contact_hint", "name"), ("phone", "phone"), ("call_time", "call_time"))
+    for r in conn.execute("SELECT id,filename,contact_hint,phone,call_time FROM calls").fetchall():
+        info = naming.parse_filename(r["filename"], extra_patterns=extra_patterns)
+        upd = [(c, info[k]) for c, k in cols if info[k] and info[k] != r[c]]
+        if not upd:
+            continue
+        conn.execute("UPDATE calls SET " + ",".join(c + "=?" for c, _ in upd) + " WHERE id=?",
+                     tuple(v for _, v in upd) + (r["id"],))
+        changed += 1
+    conn.commit()
+    return {"changed": changed, "total": conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]}
+
+
 def stats(conn: sqlite3.Connection) -> dict:
     out = {}
     for r in conn.execute("SELECT status, COUNT(*) c FROM calls GROUP BY status"):

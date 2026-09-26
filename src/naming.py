@@ -16,7 +16,12 @@ TIME_RE = re.compile(r"(?<!\d)(?P<h>\d{1,2})[.:_-](?P<mi>\d{2})(?:[.:_-](?P<s>\d
 TIME4_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3])([0-5]\d)(?!\d)")
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?86[\s-]*)?(?P<mob>1[3-9]\d[\s-]?\d{4}[\s-]?\d{4})(?!\d)|(?<!\d)(?P<land>(?:0\d{2,3}-?)?\d{7,8})(?!\d)")
 COMPACT_DT_RE = re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})[_-]?(\d{2})(\d{2})(\d{2})?(?!\d)")
-SPACED_DIGITS_RE = re.compile(r"\d(?:[\s-]\d){5,}")  # "131 1781 8888" 这类带分隔的号码
+SPACED_DIGITS_RE = re.compile(r"\d(?:[\s-]\d){5,}")  # "1 3 8 0 0 1 3 8 0 0 0" 这类逐位带分隔的号码
+# 座机/热线常写成分组带空格：'010 6598 1234'、'400 610 1234'（示例号码为占位，非真实号码）
+DIGIT_GROUPS_RE = re.compile(r"(?<!\d)\d{3,4}(?:[\s-]+\d{3,4}){1,2}(?!\d)")
+# 手机/座机都没有时的身份线索：95xxx 特服、10086/12306、400/800 热线、00/+ 国际直拨
+HOTLINE_RE = re.compile(
+    r"(?<!\d)(?P<hl>(?:95\d{2,4}|1[0123]\d{3,4}|[48]00\d{7,9}|(?:00|\+)[\s-]?\d{8,15}))(?!\d)")
 
 NOISE_WORDS = {
     "rec", "record", "recording", "call", "callout", "callin", "incoming", "outgoing",
@@ -26,17 +31,20 @@ NOISE_WORDS = {
 CN_NOISE = ["通话录音", "录音", "通话", "来电", "拨出", "打入", "拨入", "电话", "语音", "自动"]
 
 
-def _squash_spaced_digits(text: str):
-    """Collapse '131 1781 8888' / '+86 131...' into '13117818888' so date/phone
-    regexes work on phone-derived filenames. Returns (new_text, [collapsed runs])."""
-    runs = []
+def _is_noise_token(tok: str) -> bool:
+    """噪声判给整个拼接词：'CallRecording' 算噪声，'Tom' / 'WangFang' 不算。"""
+    parts = [p for p in re.split(r"(?<=[a-z])(?=[A-Z])|[.\-]+", tok) if p]
+    return bool(parts) and all(p.lower() in NOISE_WORDS for p in parts)
+
+
+def _squash_spaced_digits(text: str) -> str:
+    """Collapse '138 0013 8000' / '+86 138...' / '010 6234 5678' into one digit
+    run so the date and phone regexes work on grouped-number filenames."""
 
     def sub(m):
-        digits = re.sub(r"\D", "", m.group(0))
-        runs.append(digits)
-        return digits
+        return re.sub(r"\D", "", m.group(0))
 
-    return SPACED_DIGITS_RE.sub(sub, text), runs
+    return SPACED_DIGITS_RE.sub(sub, DIGIT_GROUPS_RE.sub(sub, text))
 
 
 CN_DATE_RE = re.compile(r"(?P<y>20\d{2})\s*年\s*(?P<m>\d{1,2})\s*月\s*(?P<d>\d{1,2})\s*日?")
@@ -47,7 +55,7 @@ def parse_filename(path: str | Path, file_mtime: Optional[float] = None,
     p = Path(path)
     stem = p.stem
     out: dict = {"name": None, "phone": None, "call_time": None, "matched_by": None}
-    work, _runs = _squash_spaced_digits(stem)  # '+86 131 1781 8888' -> '+8613117818888'
+    work = _squash_spaced_digits(stem)  # '+86 138 0013 8000' -> '+8613800138000'
 
     # Chinese date form first (2024年1月5日)
     cm = CN_DATE_RE.search(work)
@@ -86,19 +94,24 @@ def parse_filename(path: str | Path, file_mtime: Optional[float] = None,
             y, mo, d = (int(x) for x in dm.groups())
             try:
                 base = datetime(y, mo, d)
-                rest = work[:dm.start()] + " " + work[dm.end():]
-                tm = TIME_RE.search(rest)
+                after, before = work[dm.end():].lstrip(), work[:dm.start()].rstrip()
+                work = (work[:dm.start()] + " " + work[dm.end():]).strip()
+                tm = TIME_RE.search(work)
                 if tm:
                     h, mi, s = tm.groups()
                     base = base.replace(hour=min(int(h), 23), minute=min(int(mi), 59), second=int(s or 0))
+                    work = (work[:tm.start()] + " " + work[tm.end():]).strip()
+                else:
+                    # 只认紧贴日期的 4 位时分（'2024-02-02 1011'），孤立数字不当时间
+                    hhmm = re.match(r"(\d{4})(?!\d)", after) or re.search(r"(?<!\d)(\d{4})$", before)
+                    if hhmm:
+                        h, mi = int(hhmm.group(1)[:2]), int(hhmm.group(1)[2:])
+                        if h <= 23 and mi <= 59:
+                            base = base.replace(hour=h, minute=mi)
+                            work = work.replace(hhmm.group(1), " ", 1).strip()
                 dt = base.isoformat(timespec="seconds")
             except ValueError:
                 dt = None
-            # remove the date run and a directly-adjacent time run from work
-            work = (work[:dm.start()] + " " + work[dm.end():]).strip()
-            tm2 = TIME_RE.search(work)
-            if dt and tm2 and dm and not COMPACT_DT_RE.search(stem):
-                work = (work[:tm2.start()] + " " + work[tm2.end():]).strip()
         out["call_time"] = dt
         if dt:
             out["matched_by"] = "date_time"
@@ -109,11 +122,12 @@ def parse_filename(path: str | Path, file_mtime: Optional[float] = None,
     if phones:
         out["phone"] = max(phones, key=len)
         work = PHONE_RE.sub(" ", work)
-        # keep collapsed spaced-digit runs that were not phones/dates as name hints
-        for digits in _runs:
-            d = digits.lstrip("+")
-            if len(d) >= 7 and d[-11:] != out["phone"] and not d.startswith("86") and out["name"] is None:
-                out["name"] = digits
+    else:
+        # 没有手机号/座机时，退一步认特服号与热线：95xxx、10086/12306、400/800、00 国际直拨
+        hl = [m.group("hl").replace(" ", "").replace("-", "") for m in HOTLINE_RE.finditer(work)]
+        if hl:
+            out["phone"] = max(hl, key=len)
+            work = HOTLINE_RE.sub(" ", work)
 
     # strip config-provided custom patterns (named groups name/phone)
     for pat in extra_patterns or []:
@@ -129,19 +143,21 @@ def parse_filename(path: str | Path, file_mtime: Optional[float] = None,
             if gd.get("phone") and not out["phone"]:
                 out["phone"] = gd["phone"]
 
-    # Chinese name tokens: 2-4 chars, not noise
+    # Chinese name tokens: 2-4 chars look like a person, 5-6 like a company/客服
     if not out["name"]:
+        cands = []
         for cn_word in re.findall(r"[\u4e00-\u9fa5]{2,6}", work):
             w = cn_word
             for noise in CN_NOISE:
                 w = w.replace(noise, "")
-            if 2 <= len(w) <= 4:
-                out["name"] = w
-                break
+            if 2 <= len(w) <= 6:
+                cands.append(w)
+        if cands:
+            out["name"] = next((x for x in cands if len(x) <= 4), cands[0])
     # Latin tokens
     if not out["name"]:
         toks = re.split(r"[^A-Za-z.\-]+", work)
-        cand = [t for t in toks if t.lower().strip(".") not in NOISE_WORDS and len(t) >= 2]
+        cand = [t for t in toks if len(t) >= 2 and not _is_noise_token(t)]
         if cand:
             out["name"] = " ".join(cand[:2]).strip(" .-")
 
@@ -173,6 +189,9 @@ if __name__ == "__main__":
         "20240315_201530_from_13800138000.wav",
         "CallRecording_20230707153022_WangFang.m4a",
         "来电 18612345678 2023-09-09.m4a",
+        "010 6234 5678_20240115143022.m4a",
+        "中国移动客服@95588_20240115143022.m4a",
+        "+86 138 0013 8000 2024-02-02 1011.m4a",
     ]
     for s in samples:
         print(json.dumps(parse_filename(s), ensure_ascii=False))

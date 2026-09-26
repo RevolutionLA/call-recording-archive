@@ -63,6 +63,7 @@ llm:
   max_tokens: 1024
   enabled: true
   max_minutes: 30                         # 每轮摘要限时：单卡 GPU 要和精修轮转，别一次把上千通跑完
+  wait_for_refine: false                  # 开了 qwen 精修后可设 true：摘要等精修跑完再做，免得用旧文本摘一次、新文本再摘一次
 
 # ---------- Qwen3 精修（可选） ----------
 # 用第二个 Python 环境逐段「重听」已切分语音段：文字更准（专名/数字/方言口音），

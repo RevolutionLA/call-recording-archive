@@ -66,6 +66,7 @@ cp config.example.yaml config.yaml
 
 # 3) 把手机通话录音放进项目目录，然后：
 python pipeline.py scan        # 扫描入库（增量，可反复）
+python pipeline.py refresh     # 解析规则升级后回填 姓名/号码/时间（不重跑音频）
 python pipeline.py run         # 转写 + 声纹分离（断点续跑，可过夜）
 python pipeline.py align       # 自动识别「我」+ 打标签 + 归并联系人
 python pipeline.py summarize   # 本地 LLM 摘要（需 Ollama）
@@ -75,7 +76,9 @@ python pipeline.py web         # 打开驾驶舱 http://localhost:8760
 
 想更准的字 + 字级时间戳？`python pipeline.py refine` 用 Qwen3-ASR + ForcedAligner 在已切分的语音段上「重听」一遍：中文专名、数字和方言口音（四川话/河南话）明显更稳，原文保留在 `segments.text_sv` 可回溯。它会用第二个 Python 环境的独立进程跑，内存不足时自动跳过本轮，也可排进自动摄取循环。
 
-差别长这样（示意，非真实录音）：噪声+口音段 `那个方案我我这边呃看哈，时间大概念是下个有五左又` → `那个方案我这边看一下哈，时间大概是下个月五号左右`。代价也要说清楚：约 1–2 秒算力/秒音频，一张 6G 显存的老卡跑 85 小时音频要按天算，所以 `qwen.max_minutes` 会按轮让位给摘要，`align: false` 可跳过字级时间戳换速度。
+差别长这样（示意，非真实录音）：噪声+口音段 `那个方案我我这边呃看哈，时间大概念是下个有五左又` → `那个方案我这边看一下哈，时间大概是下个月五号左右`。代价也要说清楚：约 1–2 秒算力/秒音频，一张 6G 显存的老卡跑 85 小时音频要按天算，所以 `qwen.max_minutes` 会按轮让位、`align: false` 可跳过字级时间戳换速度；想让摘要等精修全跑完再做，把 `llm.wait_for_refine` 设为 `true`。
+
+文件名格式不用先改名：手机号、`010 6234 5678` 这类分组座机、95xxx/10086/400 特服热线、`2024-03-15 14:30`、`20240315_201530`、`2024年1月5日`、`REC_`/`CallRecording_`/`通话录音` 前缀、中文姓名与英文名都直接认（示例号码均为占位）；改规则后跑一次 `refresh` 回填历史行。
 
 ## 架构
 

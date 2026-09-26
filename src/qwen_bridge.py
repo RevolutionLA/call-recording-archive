@@ -59,6 +59,14 @@ def free_commit_gb() -> float:
     return st.ullAvailPageFile / 1024 ** 3
 
 
+def pending_count(conn) -> int:
+    """Calls still needing the Qwen3 pass — also what `llm.wait_for_refine` gates on."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM calls WHERE status IN ('transcribed','analyzed') "
+        "AND wav_path IS NOT NULL AND id NOT IN "
+        "(SELECT call_id FROM asr_outputs WHERE engine='qwen3-asr')").fetchone()[0]
+
+
 def refine_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0,
                    batch_calls: int = 0):
     """Stage A+: re-listen to each already-segmented utterance with Qwen3-ASR.

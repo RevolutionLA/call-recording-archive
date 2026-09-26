@@ -44,6 +44,13 @@ def cmd_scan(cfg, args):
     print("状态分布:", scan_mod.stats(conn))
 
 
+def cmd_refresh(cfg, args):
+    """文件名解析规则升级后，回填已入库通话的 名字/号码/时间（不改状态、不碰音频）。"""
+    conn = get_conn(cfg)
+    r = scan_mod.refresh_hints(conn, cfg.get("filename_patterns"))
+    print(f"回填完成：更新 {r['changed']} / {r['total']} 通")
+
+
 def cmd_report(cfg, args):
     conn = get_conn(cfg)
     tot = conn.execute("SELECT COUNT(*) c FROM calls").fetchone()["c"]
@@ -115,6 +122,13 @@ def identity_set_me(conn, eng, wav, start, end):
 def cmd_summarize(cfg, args):
     conn = get_conn(cfg)
     from src import summarize
+    if cfg["llm"].get("wait_for_refine") and (cfg.get("qwen") or {}).get("enabled", True):
+        from src import qwen_bridge
+        n = qwen_bridge.pending_count(conn)
+        if n:
+            print(f"摘要让位精修：还有 {n} 通未精修，跑完再摘要"
+                  f"（llm.wait_for_refine=false 可立刻开始）")
+            return
     summarize.run_pending(conn, cfg, limit=args.limit)
 
 
@@ -160,7 +174,7 @@ def _acquire_lock(name: str) -> bool:
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["scan", "report", "run", "refine", "align",
+    ap.add_argument("command", choices=["scan", "refresh", "report", "run", "refine", "align",
                                         "enroll-me", "summarize", "voices", "graph", "web"])
     ap.add_argument("--limit", type=int, default=0, help="最多处理 N 通（0=全部）")
     ap.add_argument("--workers", type=int, default=0,
@@ -184,9 +198,9 @@ def main():
         print(f"[{args.command}] GPU 正被 run/refine/summarize 中的另一阶段占用，本实例跳过")
         return
     fn = {
-        "scan": cmd_scan, "report": cmd_report, "run": cmd_run, "refine": cmd_refine,
-        "align": cmd_align, "enroll-me": cmd_enroll_me, "summarize": cmd_summarize,
-        "voices": cmd_voices, "graph": cmd_graph, "web": cmd_web,
+        "scan": cmd_scan, "refresh": cmd_refresh, "report": cmd_report, "run": cmd_run,
+        "refine": cmd_refine, "align": cmd_align, "enroll-me": cmd_enroll_me,
+        "summarize": cmd_summarize, "voices": cmd_voices, "graph": cmd_graph, "web": cmd_web,
     }[args.command]
     try:
         fn(cfg, args)
