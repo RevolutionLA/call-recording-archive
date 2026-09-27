@@ -9,6 +9,7 @@
 ![零上云](https://img.shields.io/badge/零上云-63b3a5?style=flat-square)
 [![engine: FunASR](https://img.shields.io/badge/engine-FunASR%20%C2%B7%20SenseVoice-7f8ea3?style=flat-square)](https://github.com/modelscope/FunASR)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-63b3a5?style=flat-square)
+[![locks](https://github.com/RevolutionLA/call-recording-archive/actions/workflows/locks.yml/badge.svg)](https://github.com/RevolutionLA/call-recording-archive/actions/workflows/locks.yml)
 
 **100% offline — your calls never leave your machine.**
 
@@ -75,7 +76,7 @@ python pipeline.py graph       # 关系图谱与事件时间线
 python pipeline.py web         # 打开驾驶舱 http://localhost:8760
 ```
 
-想整夜无人值守：`scripts/auto_keepalive.bat` 会按 scan→run→refine→align→summarize→graph 循环续跑（日志 `logs/auto.log`）。每个阶段都有单实例锁，手动再开一个同名命令会被挡住并以 rc=76 退出，所以 `run_keepalive.bat`（只跑转写）和它是**二选一**，同开只会互相让位。Linux/macOS 用 `fcntl.flock`，同样互斥。
+想整夜无人值守：`scripts/auto_keepalive.bat` 会按 scan→run→refine→align→summarize→graph 循环续跑（日志 `logs/auto.log`）。每个阶段都有单实例锁，手动再开一个同名命令会被挡住并以 rc=76 退出，所以 `run_keepalive.bat`（只跑转写）和它是**二选一**，同开只会互相让位。Linux/macOS 用 `fcntl.flock`，同样互斥（三种操作系统的锁行为由 GitHub Actions 用真实函数持续验证，见 `scripts/test_lock.py`）。
 
 想更准的字 + 字级时间戳？`python pipeline.py refine` 用 Qwen3-ASR + ForcedAligner 在已切分的语音段上「重听」一遍：中文专名、数字和方言口音（四川话/河南话）明显更稳，原文保留在 `segments.text_sv` 可回溯。它会用第二个 Python 环境的独立进程跑，内存不足时自动跳过本轮，也可排进自动摄取循环。
 
@@ -127,7 +128,7 @@ graph + voices + web 驾驶舱（FastAPI + 自绘 Canvas / ECharts，全本地�
 
 ## 已知限制
 
-- **Qwen3 精修的长段切分可能在接缝处丢字**。一段超过 `qwen3.refine.chunk_sec`（默认 20 秒）的录音会被切成若干块分别识别再拼回文本，块与块之间不留重叠，正好压在切点上的那个字有可能丢失或重复。跑批日志会打印"几批 / 几块 / 几处接缝"以及每处接缝两端的字，先观测再决定是否上重叠。只要文本不要字级时间戳时可用 `--align 0`。
+- **Qwen3 精修的长段切分可能在接缝处丢字（已实测，见下）**。一段超过 `qwen3.refine.chunk_sec`（默认 20 秒）的录音会被切成若干块分别识别再拼回文本，块与块之间不留重叠，正好压在切点上的那个字有可能丢失。对库里已精修的 77 通（647 段、111 个跨块段、188 处接缝）做时间戳空洞审计：17.2% 的段会被切，接缝处出现 >600ms 空洞的概率约为随机字间隙的 3 倍——切点确实更容易留下空洞，但绝对量很小（13 处），且空洞本身可能只是自然停顿而非丢字。`python scripts/seam_audit.py` 随时可复算并列出可疑时间点供人工试听。跑批日志会打印"几批 / 几块 / 几处接缝"及每处接缝两端的字（含空块标记）。在人工确认丢字率之前维持无重叠切分；只要文本不要字级时间戳时可用 `--align 0`。
 - **单张 6G 卡上转写、精修、摘要三者互斥**，靠 `data/lock_gpu.lock` 排队；被挡住的一方以退出码 76 跳过并在日志里留一行，守护脚本会隔一小段时间再试。同时开两个守护脚本属于设计内的互斥，不是故障。
 - **摘要依赖本机 LLM 后端**。Ollama 走原生 `/api/chat`（思考模型必须带 `think:false`，否则返回空正文），LM Studio / vLLM / llama.cpp 走 `/v1/chat/completions`；后端没起来时 `base_url` 里有没有 `/v1` 会被用来猜类型，猜错就在日志里报空正文失败而不是静默写一条空摘要。
 

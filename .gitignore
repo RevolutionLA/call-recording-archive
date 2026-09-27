@@ -22,3 +22,7 @@ config.yaml
 *.wma
 *.silk
 *.slk
+
+# 评审过程记录只留本地，随仓库发布的对外版是 docs/review-summary.md
+docs/code-review*.md
+.workbuddy/

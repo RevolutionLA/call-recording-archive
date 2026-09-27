@@ -153,11 +153,15 @@ def main():
                 fo.flush()
                 n += len(batch)
                 continue
-            merged = {bi: {"parts": [], "words": [], "lang": ""} for bi in range(len(batch))}
+            merged = {bi: {"parts": [], "words": [], "lang": "", "nblk": 0, "empty": 0}
+                      for bi in range(len(batch))}
             for (bi, pstart, _e), r in zip(plan, res):
                 m = merged[bi]
+                ci = m["nblk"]; m["nblk"] += 1     # 本段内第几块，供接缝对账
                 if r.text:
-                    m["parts"].append(r.text.strip())
+                    m["parts"].append((ci, r.text.strip()))
+                else:
+                    m["empty"] += 1                # 空块=该块没听出字，接缝账目不能把它算丢
                 m["lang"] = m["lang"] or (r.language or "")
                 ws = ts_to_words(getattr(r, "time_stamps", None))
                 for w in ws:               # chunk-local ms -> call timeline
@@ -166,11 +170,20 @@ def main():
             for bi, j in enumerate(batch):
                 m = merged[bi]
                 if len(m["parts"]) > 1:
-                    edges = [f"{p[-1:]}|{q[:1]}" for p, q in zip(m["parts"], m["parts"][1:])]
-                    print(f"[qwen] seg {j['seg_id']} 跨{len(m['parts'])}块 "
-                          f"接缝两端字: {' '.join(edges)}", flush=True)
+                    # 相邻两块的首末字；两块之间夹过空块就标出来，
+                    # 否则 "A尾|C首" 会被误读成一对真正的接缝
+                    edges = [f"{p[-1:]}|{(q_i - p_i - 1) * '(空块)|'}{q[:1]}"
+                             for (p_i, p), (q_i, q) in zip(m["parts"], m["parts"][1:])]
+                    print(f"[qwen] seg {j['seg_id']} 跨{m['nblk']}块"
+                          + (f"（其中 {m['empty']} 块为空）" if m["empty"] else "")
+                          + f" 接缝两端字: {' '.join(edges)}", flush=True)
+                elif m["nblk"] > 1 and m["empty"]:
+                    # 多块段只有 0/1 块听出字：大段静默退化的信号，必须响一声
+                    print(f"[qwen] seg {j['seg_id']} 跨{m['nblk']}块但仅 "
+                          f"{len(m['parts'])} 块有字（{m['empty']} 块为空）", flush=True)
                 fo.write(json.dumps({"call_id": j["call_id"], "seg_id": j["seg_id"],
-                                     "text": "".join(m["parts"]), "lang": m["lang"],
+                                     "text": "".join(p for _, p in m["parts"]),
+                                     "lang": m["lang"],
                                      "words": m["words"]}, ensure_ascii=False) + "\n")
             fo.flush()
             n += len(batch)

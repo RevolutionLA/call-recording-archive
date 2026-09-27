@@ -1,0 +1,35 @@
+name: locks
+
+# The flock branch of pipeline._acquire_lock (Linux/macOS) has never executed on
+# the dev box (Windows-only). This workflow runs scripts/test_lock.py -- the
+# real function, no stubs -- on each OS so both lock paths are kernel-verified.
+
+on:
+  push:
+    paths:
+      - pipeline.py
+      - scripts/test_lock.py
+      - .github/workflows/locks.yml
+  pull_request:
+    paths:
+      - pipeline.py
+      - scripts/test_lock.py
+      - .github/workflows/locks.yml
+  workflow_dispatch:
+
+jobs:
+  lock:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install minimal deps (pipeline imports yaml at module level)
+        run: pip install pyyaml
+      - name: run cross-platform lock test
+        run: python scripts/test_lock.py
