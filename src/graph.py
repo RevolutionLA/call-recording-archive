@@ -43,7 +43,7 @@ def service_call_ids(conn, cfg) -> set:
     rows = conn.execute(
         "SELECT c.id, c.duration_sec,"
         " (SELECT GROUP_CONCAT(text_zh, ' ') FROM segments s WHERE s.call_id=c.id) t"
-        " FROM calls c WHERE c.status IN ('transcribed','analyzed')").fetchall()
+        " FROM calls c WHERE c.status IN ('transcribed','analyzed') AND c.dup_of IS NULL").fetchall()
     out = set()
     for r in rows:
         t = r["t"] or ""
@@ -75,6 +75,7 @@ def build(conn: sqlite3.Connection, cfg: dict, with_llm: bool = False):
             "SELECT s.contact_id cid, COUNT(*) n, MIN(c.call_time) t0, MAX(c.call_time) t1,"
             " SUM(c.duration_sec) dur FROM segments s JOIN calls c ON c.id=s.call_id"
             " WHERE s.who='other' AND s.contact_id IS NOT NULL"
+            " AND c.dup_of IS NULL"
             " AND c.id NOT IN (SELECT id FROM svc_calls) GROUP BY s.contact_id"):
         dst = contact_ids.get(r["cid"])
         if not dst:
@@ -86,7 +87,7 @@ def build(conn: sqlite3.Connection, cfg: dict, with_llm: bool = False):
     # events from LLM analysis
     n_ev = 0
     for c in conn.execute("SELECT id, call_time, analysis, contact_hint, phone FROM calls "
-                          "WHERE analysis IS NOT NULL"
+                          "WHERE analysis IS NOT NULL AND dup_of IS NULL"
                           " AND id NOT IN (SELECT id FROM svc_calls)"):
         try:
             a = json.loads(c["analysis"])

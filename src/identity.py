@@ -15,7 +15,7 @@ Flow
 from __future__ import annotations
 import sqlite3
 import numpy as np
-from . import db
+from . import db, naming
 
 
 def _norm(e):
@@ -201,10 +201,13 @@ def merge_same_person(conn, sim_thr: float = 0.8):
         merged += 1
 
     # pass 1: identical phone -> same person, no voiceprint needed
+    # 拆分出来的坐席共享总机号码，绝不能按号码并回去（那正好把刚分开的两个人又合成一个）
     dups = conn.execute("SELECT phone FROM contacts WHERE phone IS NOT NULL AND phone<>'' "
+                        "AND (kind IS NULL OR kind<>'seat') "
                         "GROUP BY phone HAVING COUNT(*)>1").fetchall()
     for d in dups:
         rows = conn.execute("SELECT id FROM contacts WHERE phone=? "
+                            "AND (kind IS NULL OR kind<>'seat') "
                             "ORDER BY n_calls DESC, id ASC", (d["phone"],)).fetchall()
         keep = next((r["id"] for r in rows if _has_real_name(r["id"])), rows[0]["id"])
         for r in rows:
@@ -214,9 +217,10 @@ def merge_same_person(conn, sim_thr: float = 0.8):
     # pass 2: same voiceprint, different numbers
     # 一次性预取（存在性 / n_calls / 有无真名），避免每对联系人都回表查 4 次
     cents = {c["id"]: _contact_embedding(conn, c["id"]) for c in
-             conn.execute("SELECT id FROM contacts")}
+             conn.execute("SELECT id FROM contacts WHERE kind IS NULL OR kind<>'seat'")}
     rows = {c["id"]: c for c in
-            conn.execute("SELECT id,name,phone,n_calls FROM contacts")}
+            conn.execute("SELECT id,name,phone,n_calls FROM contacts "
+                         "WHERE kind IS NULL OR kind<>'seat'")}
 
     def _named(rec):
         return bool(rec and rec["name"] and rec["name"] != rec["phone"])
@@ -268,8 +272,13 @@ def merge_same_person(conn, sim_thr: float = 0.8):
     return merged
 
 
-def resolve_contacts(conn, match_thr: float = 0.55, seed_quality: float = 0.6):
-    """Map 'other' segments to contacts by voiceprint; grow the library."""
+def resolve_contacts(conn, match_thr: float = 0.55, seed_quality: float = 0.6,
+                     extra_names=None):
+    """Map 'other' segments to contacts by voiceprint; grow the library.
+
+    extra_names = config 的 shared_line_names：判断「这条线是总机还是个人」必须和
+    dedup.classify_lines 用同一套词表，否则同一通电话在两个阶段被认成两种性质。
+    """
     #  contacts 只有几百行，但段有成千上万条：把 name/phone→id 和每通的文件名
     #    线索一次性拿进内存，别在段循环里逐条回表
     by_name, by_phone, name_of = {}, {}, {}
@@ -290,7 +299,7 @@ def resolve_contacts(conn, match_thr: float = 0.55, seed_quality: float = 0.6):
     #    for a phone we already have (that churn fought the same-person merge)
     for r in conn.execute(
             "SELECT DISTINCT contact_hint, phone FROM calls "
-            "WHERE contact_hint IS NOT NULL OR phone IS NOT NULL"):
+            "WHERE (contact_hint IS NOT NULL OR phone IS NOT NULL) AND dup_of IS NULL"):
         label = r["contact_hint"] or r["phone"]
         if r["phone"]:
             ex_id = by_phone.get(r["phone"])
@@ -303,8 +312,9 @@ def resolve_contacts(conn, match_thr: float = 0.55, seed_quality: float = 0.6):
                 continue
         if label in by_name:      # UNIQUE(name) 已存在，INSERT OR IGNORE 本来就是空操作
             continue
-        cur = conn.execute("INSERT INTO contacts(name,phone,updated_at) VALUES(?,?,?)",
-                           (label, r["phone"], db.now()))
+        kind = "org" if naming.classify_line(label, r["phone"], extra_names) == "shared_line" else None
+        cur = conn.execute("INSERT INTO contacts(name,phone,kind,updated_at) VALUES(?,?,?,?)",
+                           (label, r["phone"], kind, db.now()))
         _remember(cur.lastrowid, label, r["phone"])
     conn.commit()
 
@@ -313,11 +323,19 @@ def resolve_contacts(conn, match_thr: float = 0.55, seed_quality: float = 0.6):
     mat = np.vstack([cents[cid] for cid in ids]) if ids else np.zeros((0, 1))
 
     hints = {r["id"]: (r["contact_hint"], r["phone"]) for r in conn.execute(
-        "SELECT id, contact_hint, phone FROM calls")}
+        "SELECT id, contact_hint, phone FROM calls WHERE dup_of IS NULL")}
+    kinds = {c["id"]: c["kind"] for c in conn.execute("SELECT id,kind FROM contacts")}
+
+    def _seat(org_name, vec):
+        """总机通话先落到已知坐席上（专线分人阶段建出来的子档案）。"""
+        from . import sharedline
+        return sharedline.seat_for(conn, org_name, vec)
 
     segs = conn.execute(
-        "SELECT id, call_id, embedding FROM segments "
-        "WHERE who='other' AND embedding IS NOT NULL AND contact_id IS NULL").fetchall()
+        "SELECT s.id, s.call_id, s.embedding FROM segments s "
+        "JOIN calls c ON c.id=s.call_id "
+        "WHERE s.who='other' AND s.embedding IS NOT NULL AND s.contact_id IS NULL "
+        "AND c.dup_of IS NULL").fetchall()
     me = get_me_embedding(conn)
     assigned = 0
     for s in segs:
@@ -333,24 +351,42 @@ def resolve_contacts(conn, match_thr: float = 0.55, seed_quality: float = 0.6):
         call_hint, call_phone = hints.get(s["call_id"], (None, None))
         hint = call_hint or call_phone
         if best is not None and best_sim >= match_thr:
-            conn.execute("UPDATE segments SET contact_id=?,contact_conf=? WHERE id=?",
-                         (best, best_sim, s["id"]))
-            assigned += 1
-            # filename hint says another (known) contact -> trust text over voice
+            target, conf = best, best_sim
+            # filename hint says another (known) contact -> trust text over voice,
+            # 但总机例外：文件名叫「某某公司」不代表对面是同一个人
             hid = by_name.get(hint) if hint else None
             if hid is not None and hid != best:
-                conn.execute("UPDATE segments SET contact_id=?,contact_conf=? WHERE id=?",
-                             (hid, 0.95, s["id"]))
+                if kinds.get(hid) == "org":
+                    target, conf = hid, 0.7
+                else:
+                    target, conf = hid, 0.95
+            # 落到总机身上不等于落到人。声纹撞上「总机平均值」是很常见的（那本来就是
+            # 各坐席的均值），这时候要先看能不能对上某个已拆出来的坐席，落不到才留在总机，
+            # 否则专线分人拆好的档案会在下一次归并时被总机本身重新吃掉。
+            if kinds.get(target) == "org":
+                seat = _seat(name_of.get(target) or hint or "", v)
+                if seat:
+                    target, conf = seat, 0.8
+            conn.execute("UPDATE segments SET contact_id=?,contact_conf=? WHERE id=?",
+                         (target, conf, s["id"]))
+            assigned += 1
         elif hint:
             cid = by_name.get(hint)
             if cid is None:
                 cid = by_phone.get(call_phone) if call_phone else None
             if cid is None:
-                cur = conn.execute("INSERT INTO contacts(name,phone,updated_at) VALUES(?,?,?)",
-                                   (hint, call_phone, db.now()))
+                kind = "org" if naming.classify_line(hint, call_phone, extra_names) == "shared_line" else None
+                cur = conn.execute("INSERT INTO contacts(name,phone,kind,updated_at) VALUES(?,?,?,?)",
+                                   (hint, call_phone, kind, db.now()))
                 cid = _remember(cur.lastrowid, hint, call_phone)
+                if kind:
+                    kinds[cid] = kind
+            conf = 0.9
+            if kinds.get(cid) == "org":
+                seat = _seat(hint, v)
+                cid, conf = (seat, 0.75) if seat else (cid, 0.7)
             conn.execute("UPDATE segments SET contact_id=?,contact_conf=? WHERE id=?",
-                         (cid, 0.9, s["id"]))
+                         (cid, conf, s["id"]))
             if cid not in cents:
                 cents[cid] = v
                 ids.append(cid)

@@ -59,7 +59,8 @@ def _process_rows(conn, eng, cfg, rows, t0, verbose=True):
 
 def run_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0, verbose: bool = True):
     eng = FunAsrEngine(cfg)
-    q = "SELECT id,path FROM calls WHERE status IN ('pending','normalized') ORDER BY id"
+    q = ("SELECT id,path FROM calls WHERE status IN ('pending','normalized')"
+         " AND dup_of IS NULL ORDER BY id")
     if limit:
         q += f" LIMIT {int(limit)}"
     rows = conn.execute(q).fetchall()
@@ -82,7 +83,8 @@ def run_ids(conn: sqlite3.Connection, cfg: dict, ids: list):
 
 
 def pending_ids(conn, limit: int = 0) -> list:
-    q = "SELECT id FROM calls WHERE status IN ('pending','normalized') ORDER BY id"
+    q = ("SELECT id FROM calls WHERE status IN ('pending','normalized')"
+         " AND dup_of IS NULL ORDER BY id")
     if limit:
         q += f" LIMIT {int(limit)}"
     return [r["id"] for r in conn.execute(q).fetchall()]

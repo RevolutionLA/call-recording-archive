@@ -131,7 +131,7 @@ def run_pending(conn: sqlite3.Connection, cfg: dict, limit: int = 0):
         print("llm.enabled=false，跳过摘要")
         return
     q = ("SELECT id, contact_hint, phone, call_time FROM calls "
-         "WHERE status='transcribed' AND summary IS NULL ORDER BY id")
+         "WHERE status='transcribed' AND summary IS NULL AND dup_of IS NULL ORDER BY id")
     if limit:
         q += f" LIMIT {int(limit)}"
     rows = conn.execute(q).fetchall()

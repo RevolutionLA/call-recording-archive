@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS calls(
   fulltext_en TEXT,                    -- 英文全文（检索用）
   speaker_map TEXT,                    -- JSON {local_spk: global_speaker_id or 'me'/'other'}
   source_id INTEGER,                   -- FK sources.id（可空）
+  audio_key TEXT,                      -- 库内查重指纹（大小+时长，不读音频）
+  probe_key TEXT,                      -- 抽样内容指纹（头尾各 64KB），只在候选组里算
+  dup_of INTEGER,                      -- 副本指向正本 calls.id；NULL=正本
+  dup_reason TEXT,                     -- 判重依据（人话，页面直接显示）
+  line_kind TEXT,                      -- person | shared_line（企业专线：对面可能换人）
   updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS segments(
@@ -78,6 +83,8 @@ CREATE TABLE IF NOT EXISTS contacts(
   mean_embedding BLOB,                -- 该联系人声纹均值（供后续匹配）
   n_calls INTEGER DEFAULT 0,
   note TEXT,
+  parent_id INTEGER,                  -- 专线坐席归属的总机联系人（可空）
+  kind TEXT,                          -- NULL/person | org（总机） | seat（拆分出的坐席）
   updated_at TEXT
 );
 
@@ -132,6 +139,16 @@ CREATE TABLE IF NOT EXISTS sources(                        -- 外部录音库（
 MIGRATIONS = [
     "ALTER TABLE calls ADD COLUMN source_id INTEGER",
     "ALTER TABLE segments ADD COLUMN text_sv TEXT",   # SenseVoice 原文（被 Qwen 精修覆盖前留存）
+    "ALTER TABLE calls ADD COLUMN audio_key TEXT",
+    "ALTER TABLE calls ADD COLUMN probe_key TEXT",
+    "ALTER TABLE calls ADD COLUMN dup_of INTEGER",
+    "ALTER TABLE calls ADD COLUMN dup_reason TEXT",
+    "ALTER TABLE calls ADD COLUMN line_kind TEXT",
+    "ALTER TABLE contacts ADD COLUMN parent_id INTEGER",
+    "ALTER TABLE contacts ADD COLUMN kind TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_calls_key ON calls(audio_key)",
+    "CREATE INDEX IF NOT EXISTS idx_calls_dup ON calls(dup_of)",
+    "CREATE INDEX IF NOT EXISTS idx_contacts_parent ON contacts(parent_id)",
 ]
 
 
@@ -139,8 +156,13 @@ def migrate(conn):
     for sql in MIGRATIONS:
         try:
             conn.execute(sql)
-        except sqlite3.OperationalError:
-            pass  # duplicate column
+        except sqlite3.OperationalError as e:
+            # 「列/索引已存在」是正常路径（老库迁移过，或新库建表时就带着）；
+            # 其余 OperationalError 必须留痕——索引没建成的表现只是「跑得慢」，
+            # 一声不吭地跳过，没人会想到是这里少了一条 CREATE INDEX。
+            msg = str(e).lower()
+            if "duplicate column" not in msg and "already exists" not in msg:
+                print(f"[db] 迁移被跳过：{e}", flush=True)
     conn.commit()
 
 

@@ -2,10 +2,12 @@
 
 Commands (run with the conda `sensevoice` env python):
   python pipeline.py scan              扫描录音目录入库
+  python pipeline.py dedup             查重：标出同一录音的多份备份（只读库，不读音频）
   python pipeline.py report            查看当前进度/统计
   python pipeline.py run [--limit N]   转写+声纹分离（可断点续跑，可反复执行）
   python pipeline.py refine            用 Qwen3-ASR+ForcedAligner 精修文本与字级时间戳
   python pipeline.py align             自动识别「我」并给所有段落打 me/other/联系人标签
+  python pipeline.py lines             专线分人：同一个机构名下按声纹拆出不同坐席
   python pipeline.py enroll-me WAV [start_ms end_ms]  手动注册我的声纹
   python pipeline.py summarize         本地 LLM 摘要与分析
   python pipeline.py voices            导出各联系人音色文件（供千问 TTS 克隆）
@@ -49,6 +51,44 @@ def cmd_refresh(cfg, args):
     conn = get_conn(cfg)
     r = scan_mod.refresh_hints(conn, cfg.get("filename_patterns"))
     print(f"回填完成：更新 {r['changed']} / {r['total']} 通")
+
+
+def cmd_dedup(cfg, args):
+    """判重：先用库里的大小/时长/时间/文本找候选，再对候选抽读文件头尾各 64KB 核验内容。"""
+    conn = get_conn(cfg)
+    from src import dedup
+    r = dedup.mark(conn, cfg)
+    run = r["this_run"]
+    print(f"查重完成：本轮新标 {run['copies']} 份副本（{run['groups']} 组），"
+          f"库里累计 {r['copies']} 份 / {r['groups']} 组，"
+          f"省下约 {r['saved_sec'] / 3600:.1f} 小时（{r['saved_bytes'] / 1073741824:.1f} GB）")
+    cand = r["candidates"]
+    print(f"候选：同指纹 {cand['same_fingerprint']} 组（核验后留下 {r['exact_kept']} 组）、"
+          f"近似 {cand['near']} 组；这一轮真正判成副本的候选组 {run['candidate_groups']} 个；"
+          f"抽读内容指纹 {r['probed']} 条；专线标记 {r['lines_marked']} 通")
+    print("正本规则：已转写完成的优先当正本；副本不再进转写/精修/摘要队列，随时可解除。")
+
+
+def cmd_lines(cfg, args):
+    """专线分人：同一个机构名下按声纹拆出不同坐席并自动起名。"""
+    conn = get_conn(cfg)
+    from src import dedup, sharedline
+    dedup.classify_lines(conn, cfg.get("shared_line_names"))
+    r = sharedline.split(conn, cfg)
+    note = r.get("note")
+    if note:
+        print(note)
+    print(f"专线分人：拆分 {r['groups']} 条总机 / 新建 {r['seats']} 个坐席档案 / "
+          f"重挂 {r['moved']} 通通话（按号码认出专线 {r.get('shared_calls', 0)} 通，"
+          f"库里共 {r['orgs']} 个总机、{r['seat_contacts']} 个坐席）")
+    for g in r["splits"]:
+        who = "、".join(f"{s['name']}（{s['calls']} 通，自比 {s['intra_sim']}）" for s in g["seats"])
+        # 「簇间最像的一对」= 这几簇之间相似度最高的那一对。它才是这一刀该不该切的依据：
+        # 接近自比说明本来是同一个人被劈成两半，越小（两拨人越不像）切得越放心。
+        near = min((s["cross_sim"] for s in g["seats"] if s.get("cross_sim") is not None),
+                   default=None)
+        print(f"  {g['org']}[{g['line_kind']}] -> {who}"
+              + (f" ｜簇间最像的一对 {near}" if near is not None else ""))
 
 
 def cmd_report(cfg, args):
@@ -96,7 +136,7 @@ def cmd_align(cfg, args):
     print(msg)
     n = identity.assign_call_labels(conn)
     print(f"标注 me/other：{n} 通电话")
-    m = identity.resolve_contacts(conn)
+    m = identity.resolve_contacts(conn, extra_names=cfg.get("shared_line_names"))
     print(f"联系人归属：{m} 个段落")
     mg = identity.merge_same_person(conn, cfg["asr"].get("same_person_merge_sim", 0.8))
     print(f"同人并档（不同号码同一声纹）：合并 {mg} 个联系人")
@@ -145,9 +185,16 @@ def cmd_graph(cfg, args):
 
 
 def cmd_web(cfg, args):
+    import os
     import uvicorn
     from src import server
-    uvicorn.run(server.app, host=cfg["web"]["host"], port=cfg["web"]["port"])
+    # Windows 的 Hyper-V/WSL 会随机吞掉一整段端口（本机实测 8710-8809 被保留，
+    # 8760 直接 bind 失败 10013）。启动器挑到空闲端口时用这两个变量传进来，
+    # 没有就用 config 里的默认值。
+    host = os.environ.get("CALLREC_HOST") or cfg["web"]["host"]
+    port = int(os.environ.get("CALLREC_PORT") or cfg["web"]["port"])
+    print(f"驾驶舱： http://{host}:{port}", flush=True)
+    uvicorn.run(server.app, host=host, port=port)
 
 
 _LOCKS = []
@@ -179,6 +226,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["scan", "refresh", "report", "run", "refine", "align",
+                                        "dedup", "lines",
                                         "enroll-me", "summarize", "voices", "graph", "web"])
     ap.add_argument("--limit", type=int, default=0, help="最多处理 N 通（0=全部）")
     ap.add_argument("--workers", type=int, default=0,
@@ -194,7 +242,7 @@ def main():
     cfg = config.load()
     # rc=76：被另一个实例的锁挡住。守护脚本据此拉长重试间隔，而不是把它当成
     # 「正常跑完」在 5 秒后原地空转
-    if args.command in ("run", "refine", "summarize", "align", "graph") and not args.jobs:
+    if args.command in ("run", "refine", "summarize", "align", "graph", "dedup", "lines") and not args.jobs:
         if not _acquire_lock(args.command):
             print(f"[{args.command}] 已有实例在跑（data/lock_{args.command}.lock 被占），本实例跳过")
             raise SystemExit(76)
@@ -206,6 +254,7 @@ def main():
     fn = {
         "scan": cmd_scan, "refresh": cmd_refresh, "report": cmd_report, "run": cmd_run,
         "refine": cmd_refine, "align": cmd_align, "enroll-me": cmd_enroll_me,
+        "dedup": cmd_dedup, "lines": cmd_lines,
         "summarize": cmd_summarize, "voices": cmd_voices, "graph": cmd_graph, "web": cmd_web,
     }[args.command]
     try:

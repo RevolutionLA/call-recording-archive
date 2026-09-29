@@ -32,6 +32,42 @@ NOISE_WORDS = {
 CN_NOISE = ["通话录音", "录音", "通话", "来电", "拨出", "打入", "拨入", "电话", "语音", "自动"]
 
 
+# 坐席自报家门：专线通话里比声纹更硬的身份信号。
+# 三条都要"自称"的引导词——实测过去不带引导词的那条（裸 XX客服/XX经理）会把
+# 普通口语抠成名字（'应该客户'、'这样你们代表'、'么产天给'），档案名就脏了。
+SEAT_PATTERNS = (
+    re.compile(r"工号(?:是|为|编号)?\s*[:：]?\s*(?:的)?([A-Z]{0,3}\d{2,6})"),
+    re.compile(r"(?:我叫|我姓|名叫)\s*([一-龥]{1,3})"),
+    re.compile(r"(?:我是|这里是|这边是)\s*([一-龥]{2,4}?)\s*(?:客服|专员)"),
+    re.compile(r"(?:客服|专员)\s*([一-龥]{2,3})"),
+)
+# 抠到的串只要撞上这些词/以虚词收尾，就不是自称，是听错了断句
+_SEAT_STOP = ("你们", "我们", "他们", "这个", "那个", "这样", "那样", "应该", "可以",
+              "什么", "怎么", "客户", "用户", "服务", "工号", "客服", "专员", "一下",
+              "这边", "这里", "现在", "问题", "先生", "女士", "老师", "经理",
+              "电话", "公司", "热线", "号码", "部门", "人员", "代表", "顾问", "工作")
+_SEAT_TAIL = set("的了呢吧啊哈吗呀哦嗯就也还都要会没不很太给和与或被把让从对在有是上下来去")
+
+
+def _seat_label_ok(v: str) -> bool:
+    if not v or v in ("客服", "专员", "工号"):
+        return False
+    if any(w in v for w in _SEAT_STOP):
+        return False
+    return not (v[-1] in _SEAT_TAIL and not v[-1].isdigit())
+
+
+def extract_seat_label(text: str) -> Optional[str]:
+    """从一段对话文本里抠出坐席自称（工号优先，其次自报姓氏）。"""
+    if not text:
+        return None
+    for pat in SEAT_PATTERNS:
+        m = pat.search(text)
+        if m and _seat_label_ok(m.group(1).strip()):
+            return m.group(1).strip()
+    return None
+
+
 def _is_noise_token(tok: str) -> bool:
     """噪声判给整个拼接词：'CallRecording' 算噪声，'Tom' / 'WangFang' 不算。"""
     parts = [p for p in re.split(r"(?<=[a-z])(?=[A-Z])|[.\-]+", tok) if p]
@@ -49,6 +85,34 @@ def _squash_spaced_digits(text: str) -> str:
 
 
 CN_DATE_RE = re.compile(r"(?P<y>20\d{2})\s*年\s*(?P<m>\d{1,2})\s*月\s*(?P<d>\d{1,2})\s*日?")
+
+# 企业/机构线索：文件名里出现这些词，说明这条线是「总机/坐席」而不是某个具体的人，
+# 对面换了人文件名却一模一样（大厂总机、银行客服、快递站点都是这种）
+ORG_WORDS = (
+    "公司", "有限", "集团", "技术", "科技", "银行", "保险", "证券", "基金",
+    "快递", "物流", "外卖", "客服", "中心", "热线", "营业", "门店", "售后",
+    "维修", "安装", "物业", "中介", "平台", "工厂", "车间", "仓库", "基地",
+    "医院", "学校", "大学", "学院", "法院", "检察院", "公安", "税务", "社保",
+    "街道", "社区", "政府", "车站", "机场", "酒店", "宾馆", "超市", "商场",
+    "餐厅", "饭店", "运营商", "移动", "联通", "电信", "广电", "铁塔",
+)
+# 95xxx / 10086 / 12306 / 400 / 800 这类号码本身就是一条共享线路
+_SHARED_PHONE_RE = re.compile(r"^(?:95\d{2,4}|1[0123]\d{3,4}|[48]00\d{7,9})$")
+
+
+def classify_line(name: Optional[str], phone: Optional[str],
+                  extra_names: Optional[list] = None) -> str:
+    """person | shared_line —— 决定是否允许「同名不同人」按声纹拆分成坐席。"""
+    for n in extra_names or []:
+        if n and name and n in name:
+            return "shared_line"
+    if name and any(w in name for w in ORG_WORDS):
+        return "shared_line"
+    if phone:
+        digits = re.sub(r"\D", "", phone)
+        if _SHARED_PHONE_RE.match(digits) or digits.endswith(("95588", "10086", "10010")):
+            return "shared_line"
+    return "person"
 
 def parse_filename(path: str | Path, file_mtime: Optional[float] = None,
                    extra_patterns: Optional[list[str]] = None) -> dict:
