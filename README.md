@@ -11,7 +11,7 @@
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-63b3a5?style=flat-square)
 [![locks](https://github.com/RevolutionLA/call-recording-archive/actions/workflows/locks.yml/badge.svg)](https://github.com/RevolutionLA/call-recording-archive/actions/workflows/locks.yml)
 
-**100% offline — your calls never leave your machine.**
+**Local-first — nothing leaves your machine once the models are prepared and the summarization endpoint is local (the default).**
 
 觉得有用？点个 ⭐ 是对作者最直接的鼓励。
 
@@ -41,13 +41,13 @@
 
 现有开源工具要么面向**视频字幕/播客笔记**（FunClip、SmartSub、AudioNotes），要么只做**转写+摘要**这一步。没有一个把「通话」当专属场景做完整闭环。
 
-**CallRec 补上这一段**：转写 → 区分「我/对方」→ 声纹归并联系人 → 本地大模型摘要 → 关系图谱 → 音色导出。全程离线，模型和 LLM 都在你自己的机器上。
+**CallRec 补上这一段**：转写 → 区分「我/对方」→ 声纹归并联系人 → 本地大模型摘要 → 关系图谱 → 音色导出。模型和 LLM 都跑在你自己的机器上（边界见[设计取向](#设计取向)：首次加载模型会下载权重；摘要端点若配置为远程地址，对应转写文本会发送到该端点）。
 
 ## 它能做什么
 
 - **转写 + 说话人分离**：FunASR（fsmn-vad → SenseVoice → ct-punc）逐段转写；CAM++ 声纹 + 层次聚类，把每通话分成「我」和「对方」。
 - **跨通话认识你**：用「每通电话你都必然在场」这一先验，跨通话贪心聚类自动锁定「我」的声纹，其余按号码/声纹归并成**联系人档案**。
-- **本地大模型摘要**：Ollama 离线跑，产出摘要、待办、事件、情绪、重要度，绝不联网。
+- **本地大模型摘要**：默认走本机 Ollama（`localhost`），产出摘要、待办、事件、情绪、重要度；端点配置为远程服务时，外发的仅是对应段的转写提示文本。
 - **全文检索**：中文/英文全文入库，一句「说过的话」就能定位到具体通话、具体秒。
 - **深夜话务台驾驶舱**：通话长河、星期×小时热力图、联系人排行、时长分布——零外网依赖，字体图表全本地。
 - **关系图谱**：自绘 Canvas 力导向图，我=中央信号源，跳线粗细=话务量，悬停点亮邻域。
@@ -116,7 +116,7 @@ graph + voices + web 驾驶舱（FastAPI + 自绘 Canvas / ECharts，全本地�
 ## 设计取向
 
 - **复用本地优先**：模型只从 ModelScope 国内缓存加载，检测到已有就绝不重复下载。
-- **隐私是默认项，不是选项**：没有任何一行数据出机器。
+- **隐私是默认项，不是选项**：模型已准备完成、且摘要端点保持默认本机地址（`localhost`）时，没有任何一行数据出机器。两点边界如实说明：首次加载模型会从 ModelScope 下载权重文件；`llm.base_url` 配置为远程端点时，含转写内容的提示会发送到该端点——支持可配置端点是为了灵活，但请自己确认端点归属。
 - **断点续跑**：每通话独立状态，一通失败不拖垮整批，可 kill 可重跑。
 
 ## Roadmap
@@ -164,7 +164,7 @@ graph + voices + web 驾驶舱（FastAPI + 自绘 Canvas / ECharts，全本地�
 
 ## 联系与贡献
 
-Issues 和 PR 欢迎。改流水线请保持「断点续跑」和「数据不出机器」两条底线。
+Issues 和 PR 欢迎。改流水线请保持「断点续跑」和「默认配置下数据不出机器」两条底线。
 
 本项目经过一轮公开的三方代码评审（评审 → 复核 → 回复），真 bug、误判更正与防回归清单都整理在 [docs/review-summary.md](docs/review-summary.md)。
 
