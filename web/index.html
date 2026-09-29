@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>通话档案</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='8' fill='%23e8a33d'/></svg>">
 <script src="/static/vendor/echarts.min.js"></script>
 <style>
 @font-face{font-family:'Space Grotesk';src:url('/static/vendor/fonts/space-grotesk-400.woff2') format('woff2');font-weight:400}
@@ -80,6 +81,41 @@ td.fn{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 .pill.err{color:#d96c5f;border-color:#4a2c28}
 .pager{display:flex;gap:12px;align-items:center;color:var(--faint);margin-top:12px;font-size:13px}
 
+/* ---------- 工作台（点按钮跑流水线） ---------- */
+.hero{display:flex;gap:26px;align-items:center;flex-wrap:wrap;
+  background:linear-gradient(180deg,#1d2026,#1a1c20);border-color:#33373f}
+.hero .big{font-size:17px;color:var(--txt);font-weight:500}
+.hero .flow{font-size:12px;color:var(--faint);letter-spacing:.02em}
+.btn.prim{background:var(--amber);border-color:var(--amber);color:#181a1d;font-weight:700;padding:10px 24px}
+.btn.prim:hover{background:#f2b554;border-color:#f2b554;color:#181a1d}
+.btn.stop{color:#d96c5f;border-color:#4a2c28}
+.btn.sm{padding:4px 11px;font-size:12px}
+.btn[disabled]{opacity:.4;cursor:default}
+.jobs{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
+.job{display:flex;flex-direction:column;gap:8px}
+.job .top{display:flex;align-items:center;gap:9px}
+.job .ic{font-size:17px;filter:grayscale(.25)}
+.job .lb{font-size:15px;font-weight:500}
+.job .n{margin-left:auto;text-align:right}
+.job .n b{font-family:'Space Grotesk';font-size:23px;font-weight:500;color:var(--amber);display:block;line-height:1.1}
+.job .n.zero b{color:var(--teal)}
+.job .n span{font-size:11px;color:var(--faint)}
+.job .hint{font-size:12px;color:var(--dim);line-height:1.65;min-height:40px}
+.job .acts{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.job .st{font-size:11px;color:var(--faint);margin-top:auto;padding-top:8px;border-top:1px solid var(--line);
+  word-break:break-all}
+.job .st .num{color:var(--slate)}
+.job.running{border-color:var(--amber-dim)}
+.dot2{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--amber);
+  margin-right:6px;animation:blink 1.1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+#logbox{background:#101215;border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+  font-family:Consolas,'Courier New',monospace;font-size:12px;line-height:1.65;color:#b9c0c9;
+  white-space:pre-wrap;word-break:break-all;max-height:340px;overflow:auto;margin:0}
+.steps{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--dim)}
+.steps div{flex:1;min-width:210px}
+.steps b{color:var(--amber);font-family:'Space Grotesk';font-weight:700;margin-right:7px}
+
 /* ---------- call detail ---------- */
 #detail{margin-top:18px;border-left:2px solid var(--amber)}
 #detail .head{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
@@ -142,12 +178,29 @@ a{color:var(--slate)}
 <main id="view"></main>
 <script>
 const V=document.getElementById('view'), nav=document.getElementById('nav');
-const pages=[['dash','档案总览'],['calls','找通话'],['graph','关系图谱'],['voices','音色库'],['sources','录音库']];
+const pages=[['dash','档案总览'],['console','工作台'],['dedup','查重与专线'],['calls','找通话'],['graph','关系图谱'],['voices','音色库'],['sources','录音库']];
 let cur='dash';
 function renderNav(){nav.innerHTML='';pages.forEach(([k,t])=>{const b=document.createElement('button');
   b.textContent=t;b.className=cur===k?'on':'';b.setAttribute('aria-current',cur===k?'page':'false');
-  b.onclick=()=>{cur=k;renderNav();P[cur]()};nav.appendChild(b)})}
+  b.onclick=()=>{cur=k;renderNav();leavePage();P[cur]()};nav.appendChild(b)})}
+function leavePage(){ // 离开工作台/查重页就停掉它们的轮询
+  if(cur!=='console'){clearInterval(jobTimer);clearInterval(logTimer)}
+  if(cur!=='dedup')clearInterval(ddTimer);
+  for(const c of [...CH]){if(!c.isDisposed())c.dispose();CH.delete(c)}}  // 换页就把图表实例放掉，别攒着
 async function J(u){const r=await fetch(u);if(!r.ok)throw new Error(r.status+' '+u);return r.json()}
+/* ECharts 实例登记：同一个容器重复渲染时先释放旧实例（否则旧画布的控制层还在收事件、
+   新画的图就"点了没反应"），并在窗口/侧栏改尺寸后重排——热力图那根颜色控制杆的位置
+   是按画布尺寸算的，不 resize 就会停在老地方，看起来像"杆错位/拖不动"。 */
+const CH=new Set();
+function gcCharts(){ // 容器已被 innerHTML 换掉的实例没人管，主动放掉，否则每刷一次概览攒三个
+  for(const c of [...CH]){const d=c.isDisposed()?null:c.getDom();
+    if(!d||!d.isConnected){if(!c.isDisposed())c.dispose();CH.delete(c)}}}
+function mk(id){const el=document.getElementById(id);if(!el)return null;
+  gcCharts();
+  const prev=echarts.getInstanceByDom(el);
+  if(prev){prev.dispose();CH.delete(prev);}
+  const c=echarts.init(el);CH.add(c);return c}
+addEventListener('resize',()=>{gcCharts();for(const c of [...CH]){try{c.resize()}catch(e){CH.delete(c)}}});
 const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const dur=s=>s==null?'—':(s>=60?Math.floor(s/60)+'分'+String(Math.round(s%60)).padStart(2,'0')+'秒':Math.round(s)+'秒');
 const fmt=ts=>ts?ts.replace('T',' '):'';
@@ -168,36 +221,55 @@ async function dash(){
     <div class="stat"><b class="num">${ov.hours}<small style="font-size:15px">h</small></b><span>通话时长</span></div>
     <div class="stat"><b class="num" style="font-size:19px;line-height:2.1">${fmt(ov.first_call).slice(0,10)} — ${fmt(ov.last_call).slice(0,10)}</b><span>时间跨度</span></div>
   </div>
+  <div id="cta"></div>
   <h2>分布</h2>
   <div class="grid g2">
     <div class="card"><h3>什么时候打的（星期 × 小时）</h3><div id="ch2" class="chart"></div></div>
     <div class="card"><h3>打得最多的人</h3><div id="ch3" class="chart"></div></div>
     <div class="card"><h3>通话时长分布</h3><div id="ch4" class="chart"></div></div>
     <div class="card"><h3>处理进度</h3><div style="padding:8px 2px">${
-      Object.entries(prog).map(([k,v])=>`<span class="tag">${k==='pending'?'待处理':k==='transcribed'?'已转写':k==='analyzed'?'已摘要':k==='normalized'?'已规范化':k==='error'?'出错':esc(k)} ${v}</span>`).join('')}
+      Object.entries(prog).filter(([k])=>k!=='__dup').map(([k,v])=>`<span class="tag">${
+        {pending:'待处理',transcribed:'已转写',analyzed:'已摘要',normalized:'已规范化',
+         skipped:'重复副本',error:'出错'}[k]||esc(k)} ${v}</span>`).join('')}
+      ${ov.dup_copies?`<div class="muted" style="font-size:12px;margin-top:10px">
+        另有 <b class="num">${ov.dup_copies}</b> 份是同一录音的备份拷贝，已从统计和排队里排除
+        （省下 <b class="num">${ov.dup_hours}</b> 小时 / <b class="num">${(ov.dup_bytes/1073741824).toFixed(1)}</b> GB），
+        <a href="#" id="godup">查重与专线</a> 可逐组核对。</div>`:''}
       <div class="muted" style="font-size:12px;margin-top:10px">后台跑批持续进行中，此页每 5 秒自动刷新。</div></div></div>
   </div>`;
+  fillCta();
   drawRiver(tl);
   const axis={axisLine:{lineStyle:{color:'#2b2e35'}},axisLabel:{color:'#8b8f97'}};
   const wd=['周日','周一','周二','周三','周四','周五','周六'];
   const data=[];for(let i=0;i<7;i++)for(let h=0;h<24;h++)data.push([h,i,hm[i][h]]);
-  echarts.init(document.getElementById('ch2')).setOption({backgroundColor:'transparent',tooltip:{},
-    grid:{left:42,right:12,top:8,bottom:52},
+  const hmMax=Math.max(1,...hm.flat());
+  mk('ch2')?.setOption({backgroundColor:'transparent',
+    tooltip:{formatter:p=>`${wd[p.value[1]]} ${String(p.value[0]).padStart(2,'0')}:00<br/>${p.value[2]} 通`},
+    grid:{left:42,right:80,top:8,bottom:34},
     xAxis:{type:'category',data:[...Array(24).keys()],...axis},yAxis:{type:'category',data:wd,...axis},
-    visualMap:{min:0,max:Math.max(1,...hm.flat()),calculable:true,orient:'horizontal',left:'center',bottom:0,
-      inRange:{color:['#1a1c20','#4a3a22','#8a6224','#e8a33d']},textStyle:{color:'#8b8f97'}},
-    series:[{type:'heatmap',data}]});
-  echarts.init(document.getElementById('ch3')).setOption({backgroundColor:'transparent',tooltip:{},
+    // 控制杆横放在底部时，它自带的 min/max 数字会压在小时刻度上（实测两者 y 区间重叠）。
+    // 竖放到右侧空带里：数字在右边、刻度在底下，互不打架；范围外的格子改成暗色保留，
+    // 以前默认完全透明，一拖杆格子全消失，看着像图坏了
+    visualMap:{min:0,max:hmMax,calculable:true,orient:'vertical',right:10,top:'middle',
+      itemWidth:16,itemHeight:176,handleSize:'150%',handleStyle:{color:'#e8a33d',borderColor:'#15171a'},
+      text:['通多','通少'],textGap:8,textStyle:{color:'#8b8f97',fontSize:11},
+      inRange:{color:['#1a1c20','#4a3a22','#8a6224','#e8a33d']},
+      outOfRange:{color:['#20232a']}},
+    series:[{type:'heatmap',data,itemStyle:{borderColor:'#15171a',borderWidth:1},
+      emphasis:{itemStyle:{borderColor:'#e8a33d',borderWidth:1}}}]});
+  mk('ch3')?.setOption({backgroundColor:'transparent',tooltip:{},
     grid:{left:118,right:28,top:6,bottom:20},
     xAxis:{type:'value',...axis,splitLine:{lineStyle:{color:'#20232a'}}},
     yAxis:{type:'category',data:cts.map(x=>x.name).reverse(),...axis},
     series:[{type:'bar',data:cts.map(x=>x.calls).reverse(),barWidth:10,
       itemStyle:{color:'#63b3a5',borderRadius:[0,4,4,0]},label:{show:true,position:'right',color:'#8b8f97'}}]});
-  echarts.init(document.getElementById('ch4')).setOption({backgroundColor:'transparent',tooltip:{},
+  mk('ch4')?.setOption({backgroundColor:'transparent',tooltip:{},
     grid:{left:42,right:12,top:8,bottom:26},
     xAxis:{type:'category',data:dh.map(x=>x.label),...axis},
     yAxis:{type:'value',...axis,splitLine:{lineStyle:{color:'#20232a'}}},
     series:[{type:'bar',data:dh.map(x=>x.count),barWidth:22,itemStyle:{color:'#8a6224',borderRadius:[4,4,0,0]}}]});
+  const gd=V.querySelector('#godup');
+  if(gd)gd.onclick=e=>{e.preventDefault();cur='dedup';renderNav();P.dedup()};
 }
 
 /* 通话长河：每天一根琥珀刻度，点击跳到该日检索 */
@@ -269,7 +341,7 @@ async function calls(preset){
       <td>${esc(c.contact||c.contact_hint||c.phone||'—')}</td>
       <td class="num">${dur(c.duration_sec)}</td>
       <td><span class="pill ${/analyzed|transcribed/.test(c.status)?'done':c.status=='error'?'err':''}">${
-        c.status=='pending'?'待处理':c.status=='error'?'出错':c.status=='analyzed'?'已摘要':'已转写'}</span></td>
+        {pending:'待处理',normalized:'已规范化',skipped:'重复副本',error:'出错',analyzed:'已摘要'}[c.status]||'已转写'}</span></td>
       <td class="sum">${esc((c.summary||'').slice(0,60))}</td><td class="fn">${esc(c.filename)}</td></tr>`).join('')+
       `</table><div class="pager"><button class="btn" id="prev">上一页</button>
       <span class="num">${d.page} / ${Math.max(1,Math.ceil(d.total/d.size))} 页 · 共 ${d.total} 通</span>
@@ -551,6 +623,150 @@ async function graph(){
     ||'<div class="muted" style="padding:16px 4px">摘要跑完后，这里会按时间列出你经历的事。</div>';
 }
 
+/* ================= 工作台（点按钮 = 跑命令） ================= */
+let jobTimer=null, logTimer=null, logKey='chain', logPinned=false;
+const LIMITABLE={run:1, refine:1, summarize:1};
+
+/* 总览页顶部那条：有活儿/在跑活儿就冒出来，点一下进工作台 */
+async function fillCta(){
+  const box=document.getElementById('cta'); if(!box)return;
+  let d; try{ d=await J('/api/jobs') }catch(e){ return }
+  const running=d.stages.filter(s=>s.running).map(s=>s.label);
+  if(d.chain.running)running.push(d.chain.label);
+  if(running.length){
+    box.innerHTML=`<div class="card" style="margin:20px 0 0"><span class="dot2"></span>`+
+      `后台正在跑：${esc(running.join('、'))}
+      <button class="btn sm" id="ctago" style="margin-left:10px">看进度</button></div>`;
+  }else{
+    const todo=d.stages.filter(s=>s.pending>0);
+    if(!todo.length){box.innerHTML='';return}
+    box.innerHTML=`<div class="card" style="margin:20px 0 0">还有活儿没干完：`+
+      todo.map(s=>`<b class="num" style="color:var(--amber)">${s.pending}</b> ${esc(s.unit)}`).join(' · ')+
+      ` <button class="btn sm prim" id="ctago" style="margin-left:10px">去工作台点一下</button></div>`;
+  }
+  box.querySelector('#ctago').onclick=()=>{cur='console';renderNav();P.console()};
+}
+
+async function POSTJ(u,body){
+  const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body||{})});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(typeof j.detail==='string'?j.detail:('HTTP '+r.status));
+  return j;
+}
+function jobCard(s){
+  const pend = s.pending==null
+    ? `<b style="font-size:14px;color:var(--slate);line-height:1.7">随时可点</b>`
+    : `<b class="num">${s.pending}</b><span>${esc(s.unit)}</span>`;
+  let acts;
+  if(!s.available){
+    acts=`<span class="muted" style="font-size:12px">${esc(s.unavailable)}</span>`;
+  }else if(s.running){
+    acts=`<button class="btn sm stop" data-stop="${s.key}">■ 停止</button>
+          <button class="btn sm" data-log="${s.key}">看日志</button>`;
+  }else{
+    acts=`<button class="btn sm prim" data-run="${s.key}" data-limit="0">开始</button>`;
+    if(LIMITABLE[s.key]&&s.pending>20)
+      acts+=`<button class="btn sm" data-run="${s.key}" data-limit="50">先跑 50 通试试</button>`;
+    acts+=`<button class="btn sm" data-log="${s.key}">看日志</button>`;
+  }
+  const st = s.running
+    ? `<span class="dot2"></span>正在跑 · 开始于 <span class="num">${esc((s.started||'').slice(11,19))}</span>`
+    : (s.rc==null? '还没在本页跑过（命令行跑过也算，数据都在库里）'
+       : `上次 <span class="num">${esc((s.finished||'').slice(5,16))}</span> · ${esc(s.note)}`);
+  const line = s.last_line? `<div class="muted" style="font-size:11px;margin-top:3px" title="${esc(s.last_line)}">${esc(s.last_line.slice(0,90))}</div>`:'';
+  return `<div class="card job ${s.running?'running':''}">
+    <div class="top"><span class="ic">${s.icon}</span><span class="lb">${esc(s.label)}</span>
+      <span class="n ${s.pending===0?'zero':''}">${pend}</span></div>
+    <div class="hint">${esc(s.hint)}</div>
+    <div class="acts">${acts}</div>
+    <div class="st">${st}${line}</div></div>`;
+}
+async function tickJobs(){
+  let d;
+  try{ d=await J('/api/jobs'); }catch(e){ return }
+  jobData=d;
+  V.querySelector('#jobs').innerHTML=d.stages.map(jobCard).join('');
+  const ch=d.chain||{};
+  V.querySelector('#chainstate').innerHTML = ch.running
+    ? `<span class="dot2"></span>${esc(ch.label)}进行中：${esc((ch.last_line&&ch.last_line[0])||'')}`
+    : `<span class="muted">${ch.started?'上次：'+esc((ch.finished||ch.started)):'一条命令都不想挑，就直接点这个'}</span>`;
+  V.querySelector('#chain1').style.display=ch.running?'none':'';
+  V.querySelector('#chain2').style.display=ch.running?'none':'';
+  V.querySelector('#chainstop').style.display=ch.running?'':'none';
+  V.querySelector('#gpunote').textContent=d.gpu_note;
+  if(!logPinned){
+    const run=d.stages.find(s=>s.running);
+    const k=ch.running?'chain':(run?run.key:null);
+    if(k&&k!==logKey){logKey=k;tickLog(true)}
+  }
+}
+async function tickLog(jump){
+  if(!V.querySelector('#logbox'))return;
+  let d;
+  try{ d=await J('/api/jobs/'+logKey+'/log?tail=80') }catch(e){ return }
+  const box=V.querySelector('#logbox'), near=box.scrollHeight-box.scrollTop-box.clientHeight<60;
+  box.textContent=d.text;
+  V.querySelector('#logtitle').textContent='· '+(logKey==='chain'?'一键/挂机总日志':logKey)+'（最后 80 行）';
+  if(near||jump)box.scrollTop=box.scrollHeight;
+}
+async function consolePage(){
+  clearInterval(jobTimer); clearInterval(logTimer); logPinned=false;
+  V.innerHTML=`
+  <h2 style="margin-top:2px">工作台 · 所有后台活儿都在这里点，不用记命令</h2>
+  <div class="card" style="margin-bottom:14px">
+    <div class="steps">
+      <div><b>1</b>把手机通话录音拷进项目文件夹（E:\\AI\\2Voice\\FunASR），或在「录音库」页加一个 NAS 路径</div>
+      <div><b>2</b>点下面「一键更新全部」，然后可以关掉窗口去干活——跑在服务端，不关你的事</div>
+      <div><b>3</b>跑完回「档案总览」看长河、去「找通话」搜你说过的每一句话</div>
+    </div>
+  </div>
+  <div class="card hero">
+    <div style="flex:1;min-width:270px">
+      <div class="big">一键更新全部</div>
+      <div class="flow">扫描 → 转写 → 精修 → 归并联系人 → 摘要 → 图谱</div>
+      <div class="muted" style="font-size:12px;margin-top:4px">每步都是增量的：只做还没做过的通话，跑过的不重复花算力；中途可随时停，下次接着跑。</div>
+      <div id="chainstate" style="margin-top:8px;font-size:13px"></div>
+    </div>
+    <div class="acts" style="flex-direction:column;align-items:stretch">
+      <button class="btn prim" id="chain1">▶ 跑一轮</button>
+      <button class="btn" id="chain2">🌙 整夜挂机（跑完等 5 分钟再来一轮）</button>
+      <button class="btn stop" id="chainstop" style="display:none">■ 停止</button>
+    </div>
+  </div>
+  <div class="muted" style="font-size:12px;margin:8px 2px 14px" id="gpunote"></div>
+  <div id="jobs" class="jobs"></div>
+  <div class="card" style="margin-top:14px">
+    <h3>实时日志 <span id="logtitle" class="num"></span>
+      <button class="btn sm" id="logpick" style="float:right">跟随运行中的任务</button></h3>
+    <pre id="logbox">加载中…</pre>
+  </div>`;
+  V.querySelector('#jobs').onclick=async e=>{
+    const b=e.target.closest('button'); if(!b)return;
+    const msg=m=>{V.querySelector('#chainstate').innerHTML='<span class="muted">'+esc(m)+'</span>'};
+    try{
+      if(b.dataset.run){ await POSTJ('/api/jobs/'+b.dataset.run,{limit:+b.dataset.limit}); logKey=b.dataset.run; logPinned=false; tickLog(true); }
+      else if(b.dataset.stop){ await POSTJ('/api/jobs/'+b.dataset.stop+'/stop'); msg('已请求停止：当前这一通跑完就停，进度已保存'); }
+      else if(b.dataset.log){ logKey=b.dataset.log; logPinned=true; tickLog(true); }
+    }catch(err){ msg('失败：'+err.message) }
+    tickJobs();
+  };
+  V.querySelector('#chain1').onclick=async()=>{
+    try{await POSTJ('/api/jobs/chain')}catch(e){alert('启动失败：'+e.message)}
+    logKey='chain';logPinned=false;tickLog(true);tickJobs()};
+  V.querySelector('#chain2').onclick=async()=>{
+    if(!confirm('整夜挂机 = 反复跑「一键更新」，每轮之间等 5 分钟，直到你点停止。\n可以合上屏幕但别关机、别让这台机器休眠。确定开始？'))return;
+    try{await POSTJ('/api/jobs/auto')}catch(e){alert('启动失败：'+e.message)}
+    logKey='chain';logPinned=false;tickLog(true);tickJobs()};
+  V.querySelector('#chainstop').onclick=async()=>{
+    try{await POSTJ('/api/jobs/auto/stop')}catch(e){
+      try{await POSTJ('/api/jobs/chain/stop')}catch(e2){alert('停止失败：'+e2.message)}}
+    tickJobs()};
+  V.querySelector('#logpick').onclick=()=>{logPinned=false;tickJobs();tickLog(true)};
+  await tickJobs(); tickLog(true);
+  jobTimer=setInterval(tickJobs,2000); logTimer=setInterval(tickLog,2500);
+}
+
 /* ================= 音色库 ================= */
 async function voices(){
   const vs=await J('/api/voices');
@@ -560,7 +776,7 @@ async function voices(){
     <div style="flex:1"><b>${esc(v.speaker)}</b> <span class="vmeta num">${v.clips.length} 段 / ${v.total_sec}s · data/voices/${esc(v.dir)}</span>
     ${v.clips.map(c=>`<div style="margin-top:8px"><audio controls preload="none" src="${c.url}"></audio>
       <div class="vmeta">${esc(c.text)}</div></div>`).join('')}</div></div>`).join('')
-    ||'<div class="muted" style="padding:22px 6px">还没有音色文件。等转写与标注完成后，运行 <b>python pipeline.py voices</b> 生成。</div>'}</div>`;
+    ||'<div class="muted" style="padding:22px 6px">还没有音色文件。等转写与标注完成后，到「工作台」点『导出音色片段』这一步就生成。</div>'}</div>`;
 }
 
 /* ================= 录音库（外部目录/NAS） ================= */
@@ -621,7 +837,144 @@ async function sources(){
     sources()});
 }
 
-const P={dash,calls,graph,voices,sources};
+/* ================= 查重与专线 =================
+   两件事都在"标记"层面做：磁盘上的原始录音永远不动，判定错了就改回来。
+   跑批走 /api/jobs（隐藏窗口的子进程），本页只负责起、看结果、纠正。 */
+let ddTimer=null;
+const stTxt=s=>({pending:'待处理',normalized:'已规范化',skipped:'重复副本',
+  error:'出错',transcribed:'已转写',analyzed:'已摘要'}[s]||s||'—');
+const mb=b=>b==null?'—':(b/1048576).toFixed(1)+' MB';
+
+function dupRow(c,isCop){
+  return `<tr>
+    <td>${isCop?'<span class="pill">副本</span>':'<span class="pill done">正本</span>'}</td>
+    <td class="fn" style="max-width:420px" title="${esc(c.path)}">${esc(c.path)}</td>
+    <td class="num">${fmt(c.call_time).slice(0,16)||'—'}</td>
+    <td class="num">${dur(c.duration_sec)}</td>
+    <td class="num">${mb(c.size_bytes)}</td>
+    <td>${esc(c.contact_hint||c.phone||'—')} <span class="pill ${/analyzed|transcribed/.test(c.status)?'done':c.status=='error'?'err':''}">${stTxt(c.status)}</span></td>
+    <td style="white-space:nowrap">
+      <button class="btn sm" data-see="${c.id}">看这通</button>
+      ${isCop?`<button class="btn sm" data-can="${c.id}">这份才是正本</button>
+               <button class="btn sm" data-un="${c.id}">不算副本</button>`:''}</td></tr>`;
+}
+function dupGroup(g){
+  return `<div class="card" style="margin-top:12px">
+    <h3>${esc(g.canonical.filename)} <span class="muted" style="font-weight:400">
+      · ${g.copies.length} 份备份 · ${esc(g.copies[0].dup_reason||'')}</span></h3>
+    <table><tr><th></th><th>路径</th><th>通话时间</th><th>时长</th><th>大小</th><th>对方 / 处理状态</th><th>操作</th></tr>
+      ${dupRow(g.canonical,false)}${g.copies.map(c=>dupRow(c,true)).join('')}</table></div>`;
+}
+function lineCard(o){
+  return `<div class="card" style="margin-top:12px">
+    <h3>${esc(o.name)} <span class="muted" style="font-weight:400">总机 · 已归属 ${o.n_calls} 通 ·
+      还挂在总机名下 ${o.unsplit_calls} 通</span></h3>
+    <table><tr><th>坐席档案</th><th>通话数</th><th>怎么认出来的</th><th>操作</th></tr>
+      ${o.seats.map(s=>`<tr><td><b>${esc(s.name)}</b></td><td class="num">${s.n_calls}</td>
+        <td class="muted" style="font-size:12px">${esc(s.note||'')}</td>
+        <td style="white-space:nowrap"><button class="btn sm" data-seat="${s.id}">列出通话</button>
+          <button class="btn sm" data-merge="${s.id}">并回总机</button></td></tr>
+        <tr id="ls-${s.id}" hidden><td colspan="4" class="muted" style="font-size:12px;padding:0 4px 8px">
+          ${s.calls.length?s.calls.map(c=>`<span class="tag">${fmt(c.call_time).slice(0,16)} · ${esc(c.filename)}</span>`).join(' ')
+            :'<span class="muted">这个坐席名下还没有通话（段落归属尚未跑完）</span>'}</td></tr>`).join('')}
+    </table></div>`;
+}
+const EMPTY_DUP=`<div class="muted" style="padding:6px 2px">目前没有发现重复备份。
+  新拷进来的录音（或改了文件名、转了码的副本），点右上角「重新查重」。</div>`;
+const EMPTY_LINE=`<div class="muted" style="padding:6px 2px">还没有拆出坐席。这一步只吃已有的声纹：
+  先在「工作台」跑完「转写 + 分出你我」和「归并联系人」，再点上面的「专线按声纹重新分人」。
+  同一条专线要至少有 2 通电话、且两簇声音差别够大才会动手。</div>`;
+let ddNote='';
+async function dedupPage(){
+  clearInterval(ddTimer);
+  V.innerHTML='<div class="muted">正在核对重复备份与专线…</div>';
+  let dd,ln;
+  try{ [dd,ln]=await Promise.all([J('/api/dedup'),J('/api/lines')]); }
+  catch(e){ V.innerHTML=`<div class="muted">读取失败：${esc(e.message)}</div>`; return; }
+  const s=dd.summary;
+  V.innerHTML=`
+  <h2>查重与专线 · 只改库里的标记，磁盘上的录音一个字节都不动</h2>
+  <div class="card hero">
+    <div style="flex:1;min-width:280px">
+      <div class="big">重复备份 <b class="num" style="color:var(--amber)">${s.copies}</b> 份
+        · 分成 <b class="num">${s.groups}</b> 组</div>
+      <div class="flow">先用库里的「大小 + 时长 + 转写文本」找候选，再对候选抽读文件头尾各 64KB 核验内容；
+        不整文件哈希、不删文件，判定可逐组改</div>
+      <div class="statline" style="margin:12px 0 0;gap:32px">
+        <div class="stat"><b class="num">${(s.saved_sec/3600).toFixed(1)}<small style="font-size:14px">h</small></b><span>省下的显卡时间</span></div>
+        <div class="stat"><b class="num">${(s.saved_bytes/1073741824).toFixed(1)}<small style="font-size:14px">GB</small></b><span>这些副本占的空间</span></div>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:10px">
+        正本挑的是「已经花过算力的那一份」：转过写/摘要过的当正本，没跑过的副本标成「重复副本」，
+        从此不再进转写、精修、摘要的排队。想换正本，点组里任意一行的「这份才是正本」。</div>
+    </div>
+    <div class="acts" style="flex-direction:column;align-items:stretch">
+      <button class="btn prim" data-run="dedup">▶ 重新查重</button>
+      <button class="btn" data-run="lines">▶ 专线按声纹重新分人</button>
+      <div id="ddmsg" class="muted" style="font-size:12px;max-width:270px"></div>
+    </div>
+  </div>
+  <div id="duplist">${dd.groups.length?dd.groups.map(dupGroup).join(''):EMPTY_DUP}</div>
+  <h2>企业专线 · 同一个号码后面换着好几个人接话（大厂总机、银行客服、快递站点）</h2>
+  <div class="card"><div class="muted" style="font-size:13px;line-height:1.8">
+      按号码认出的专线通话 <b class="num">${ln.shared_calls??'—'}</b> 通，其中已建总机档案
+      <b class="num">${ln.orgs}</b> 条、拆出坐席 <b class="num">${ln.seat_contacts}</b> 个。
+      分人的依据是「对方声纹」：同一总机下明显是两把嗓子，就各立一份档案，名字优先用他们在电话里
+      自报的工号/姓名（工号 0123、我叫小王），听不到就先用 A/B/C 代号，下次听到真名自动改名。
+      拆错了点「并回总机」，段落和声纹都退回上级档案。</div></div>
+  <div id="linelist">${ln.lines.length?ln.lines.map(lineCard).join(''):EMPTY_LINE}</div>`;
+  bind(dd,ln);
+}
+async function ddRefresh(){
+  const [dd,ln]=await Promise.all([J('/api/dedup'),J('/api/lines')]);
+  V.querySelector('#duplist').innerHTML=dd.groups.length?dd.groups.map(dupGroup).join(''):EMPTY_DUP;
+  V.querySelector('#linelist').innerHTML=ln.lines.length?ln.lines.map(lineCard).join(''):EMPTY_LINE;
+  return [dd,ln];
+}
+function bind(dd,ln){
+  const msg=V.querySelector('#ddmsg');
+  if(ddNote){msg.textContent=ddNote;ddNote=''}
+  const say=m=>{msg.textContent=m};
+  V.querySelector('.hero').onclick=async e=>{
+    const b=e.target.closest('[data-run]'); if(!b)return;
+    const key=b.dataset.run;
+    say('已交给后台（不弹任何窗口，日志在服务端 logs/ui_'+key+'.log）…');
+    try{ await POSTJ('/api/jobs/'+key); }
+    catch(err){ say('启动失败：'+err.message); return; }
+    clearInterval(ddTimer);
+    ddTimer=setInterval(async()=>{
+      let d; try{ d=await J('/api/jobs') }catch(err){ return }
+      const st=d.stages.find(x=>x.key===key);
+      if(st && st.running){ say(st.last_line||'进行中…'); return; }
+      clearInterval(ddTimer);
+      ddNote=`${key} 跑完了：${(st&&st.note)||'OK'}`;
+      await ddRefresh();
+      if(V.querySelector('#ddmsg')){ msg.textContent=ddNote; ddNote=''; }
+    },2500);
+  };
+  V.onclick=async e=>{
+    const b=e.target.closest('button'); if(!b)return;
+    if(b.dataset.seat){
+      const tr=V.querySelector('#ls-'+b.dataset.seat);
+      if(tr)tr.hidden=!tr.hidden; return;
+    }
+    try{
+      if(b.dataset.see){ detail(+b.dataset.see); return; }
+      if(b.dataset.can){ await POSTJ('/api/dedup/'+b.dataset.can+'/canonical');
+        ddNote='已把这份换成正本，其余（含原来那份）改指向它。'; }
+      else if(b.dataset.un){ await POSTJ('/api/dedup/'+b.dataset.un+'/unmark');
+        ddNote='已解除副本标记：这一份重新算独立通话，会回到待处理排队。'; }
+      else if(b.dataset.merge){
+        if(!confirm('把这个坐席并回总机？它名下的通话与声纹都退回上级档案。'))return;
+        await POSTJ('/api/lines/'+b.dataset.merge+'/merge-back');
+        ddNote='已并回总机。'; }
+      else return;
+      await ddRefresh();
+      say(ddNote); ddNote='';
+    }catch(err){ say('操作失败：'+err.message) }
+  };
+}
+const P={dash,calls,graph,voices,sources,console:consolePage,dedup:dedupPage};
 renderNav();P.dash();
 setInterval(async()=>{try{const p=await J('/api/progress');
   document.getElementById('status').textContent='待处理 '+(p.pending??'—')+' · 已转写 '+(p.transcribed??'—')+' · 已摘要 '+(p.analyzed??'—')}catch(e){}},5000);

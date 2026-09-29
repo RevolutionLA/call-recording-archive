@@ -3,17 +3,24 @@ name: locks
 # The flock branch of pipeline._acquire_lock (Linux/macOS) has never executed on
 # the dev box (Windows-only). This workflow runs scripts/test_lock.py -- the
 # real function, no stubs -- on each OS so both lock paths are kernel-verified.
+# It also runs scripts/test_jobs.py, which keeps the 工作台 button table honest:
+# every button must map to a subcommand pipeline.py really accepts (no GPU, no
+# models, no writes -- the live spawn part self-skips where config.yaml is absent).
 
 on:
   push:
     paths:
       - pipeline.py
+      - src/jobs.py
       - scripts/test_lock.py
+      - scripts/test_jobs.py
       - .github/workflows/locks.yml
   pull_request:
     paths:
       - pipeline.py
+      - src/jobs.py
       - scripts/test_lock.py
+      - scripts/test_jobs.py
       - .github/workflows/locks.yml
   workflow_dispatch:
 
@@ -33,3 +40,5 @@ jobs:
         run: pip install pyyaml
       - name: run cross-platform lock test
         run: python scripts/test_lock.py
+      - name: run 工作台 job-table contract test
+        run: python scripts/test_jobs.py

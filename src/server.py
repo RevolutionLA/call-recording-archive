@@ -58,16 +58,27 @@ def index():
 
 
 # ---------- overview / stats ----------
+# 统计口径一律排除「重复备份」：同一通电话拷了三份，档案里算一通。
+# 页面上另给一行小字说明副本数，数字对得上用户的直觉。
+NOT_DUP = "dup_of IS NULL"
+
+
 @app.get("/api/overview")
 def overview():
     c = init_conn()
     o = {}
-    o["total_calls"] = c.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
-    o["done"] = c.execute("SELECT COUNT(*) FROM calls WHERE status IN ('transcribed','analyzed')").fetchone()[0]
-    o["contacts"] = c.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
-    o["hours"] = round((c.execute("SELECT COALESCE(SUM(duration_sec),0) FROM calls").fetchone()[0]) / 3600, 2)
-    o["first_call"] = c.execute("SELECT MIN(call_time) FROM calls").fetchone()[0]
-    o["last_call"] = c.execute("SELECT MAX(call_time) FROM calls").fetchone()[0]
+    o["total_calls"] = c.execute(f"SELECT COUNT(*) FROM calls WHERE {NOT_DUP}").fetchone()[0]
+    o["done"] = c.execute(f"SELECT COUNT(*) FROM calls WHERE status IN ('transcribed','analyzed')"
+                          f" AND {NOT_DUP}").fetchone()[0]
+    # 总机（org）不是一个人，联系人只数真有人声纹档案的：私人 + 坐席
+    o["contacts"] = c.execute("SELECT COUNT(*) FROM contacts WHERE COALESCE(kind,'person')<>'org'").fetchone()[0]
+    o["orgs"] = c.execute("SELECT COUNT(*) FROM contacts WHERE kind='org'").fetchone()[0]
+    o["hours"] = round((c.execute(f"SELECT COALESCE(SUM(duration_sec),0) FROM calls WHERE {NOT_DUP}").fetchone()[0]) / 3600, 2)
+    o["first_call"] = c.execute(f"SELECT MIN(call_time) FROM calls WHERE {NOT_DUP}").fetchone()[0]
+    o["last_call"] = c.execute(f"SELECT MAX(call_time) FROM calls WHERE {NOT_DUP}").fetchone()[0]
+    d = c.execute("SELECT COUNT(*), COALESCE(SUM(duration_sec),0), COALESCE(SUM(size_bytes),0)"
+                  " FROM calls WHERE dup_of IS NOT NULL").fetchone()
+    o["dup_copies"], o["dup_hours"], o["dup_bytes"] = d[0], round((d[1] or 0) / 3600, 2), d[2]
     return o
 
 
@@ -77,7 +88,7 @@ def timeline(bucket: str = Query("month", pattern="^(day|week|month|year)$")):
     fmt = {"day": "%Y-%m-%d", "week": "%Y-W%W", "month": "%Y-%m", "year": "%Y"}[bucket]
     rows = c.execute(
         "SELECT strftime(?, call_time) k, COUNT(*) n, ROUND(SUM(duration_sec)/60.0,1) minutes"
-        " FROM calls WHERE call_time IS NOT NULL GROUP BY k ORDER BY k", (fmt,)).fetchall()
+        " FROM calls WHERE call_time IS NOT NULL AND dup_of IS NULL GROUP BY k ORDER BY k", (fmt,)).fetchall()
     return [{"bucket": r[0], "calls": r[1], "minutes": r[2]} for r in rows if r[0]]
 
 
@@ -87,7 +98,7 @@ def heatmap():
     c = init_conn()
     rows = c.execute(
         "SELECT strftime('%w', call_time) wd, strftime('%H', call_time) hh, COUNT(*) n"
-        " FROM calls WHERE call_time IS NOT NULL GROUP BY wd, hh").fetchall()
+        " FROM calls WHERE call_time IS NOT NULL AND dup_of IS NULL GROUP BY wd, hh").fetchall()
     grid = [[0] * 24 for _ in range(7)]
     for wd, hh, n in rows:
         if wd is None or hh is None:
@@ -102,7 +113,7 @@ def stats_contacts(limit: int = 30, since: str = "", until: str = ""):
     (filename hint/phone), so it covers every scanned recording,
     not only voiceprint-aligned segments."""
     c = init_conn()
-    w, params = ["1=1"], []
+    w, params = ["dup_of IS NULL"], []
     if since:
         w.append("call_time>=?"); params.append(since)
     if until:
@@ -123,6 +134,7 @@ def contact_timeline(contact_id: int, bucket: str = Query("month", pattern="^(da
     rows = c.execute(
         "SELECT strftime(?, c.call_time) k, COUNT(DISTINCT c.id) n FROM segments s"
         " JOIN calls c ON c.id=s.call_id WHERE s.who='other' AND s.contact_id=?"
+        " AND c.dup_of IS NULL"
         " GROUP BY k ORDER BY k", (fmt, contact_id)).fetchall()
     return [{"bucket": r[0], "calls": r[1]} for r in rows if r[0]]
 
@@ -130,7 +142,8 @@ def contact_timeline(contact_id: int, bucket: str = Query("month", pattern="^(da
 @app.get("/api/stats/duration")
 def duration_hist():
     c = init_conn()
-    rows = c.execute("SELECT duration_sec FROM calls WHERE duration_sec IS NOT NULL").fetchall()
+    rows = c.execute("SELECT duration_sec FROM calls WHERE duration_sec IS NOT NULL"
+                     " AND dup_of IS NULL").fetchall()
     bins = [10, 30, 60, 120, 300, 600, 1800, 3600, 1e9]
     labels = ["<10s", "10-30s", "30s-1m", "1-2m", "2-5m", "5-10m", "10-30m", "30-60m", ">1h"]
     hist = [0] * len(labels)
@@ -273,10 +286,15 @@ def source_stats(sid: int):
 # ---------- search / detail ----------
 @app.get("/api/calls")
 def list_calls(q: str = "", contact: str = "", who: str = "", date_from: str = "",
-               date_to: str = "", status: str = "", source: int = 0,
+               date_to: str = "", status: str = "", source: int = 0, dup: str = "",
                page: int = 1, size: int = 25):
+    """dup: 空=只看正本（默认，副本不占列表），only=只看被标出的备份，all=全都要。"""
     c = init_conn()
-    w, p = ["1=1"], []
+    w, p = ["c.dup_of IS NULL"], []
+    if dup == "only":
+        w = ["c.dup_of IS NOT NULL"]
+    elif dup == "all":
+        w = ["1=1"]
     if q:
         w.append("(c.filename LIKE ? OR c.summary LIKE ? OR s.text_zh LIKE ?)")
         p += [f"%{q}%"] * 3
@@ -299,7 +317,7 @@ def list_calls(q: str = "", contact: str = "", who: str = "", date_from: str = "
         f" LEFT JOIN contacts ct ON ct.id=s.contact_id WHERE {where}", p).fetchone()[0]
     rows = c.execute(
         f"SELECT c.id, c.filename, c.contact_hint, c.phone, c.call_time,"
-        f" c.duration_sec, c.status, c.summary,"
+        f" c.duration_sec, c.status, c.summary, c.dup_of, c.dup_reason, c.line_kind,"
         f" (SELECT GROUP_CONCAT(DISTINCT ct2.name) FROM segments s2"
         f"  JOIN contacts ct2 ON ct2.id=s2.contact_id"
         f"  WHERE s2.call_id=c.id AND s2.who='other') contact FROM calls c"
@@ -393,5 +411,100 @@ def events(limit: int = 200):
 @app.get("/api/progress")
 def progress():
     c = init_conn()
-    st = c.execute("SELECT status, COUNT(*) FROM calls GROUP BY status").fetchall()
-    return {r[0]: r[1] for r in st}
+    st = c.execute(f"SELECT status, COUNT(*) FROM calls WHERE {NOT_DUP} GROUP BY status").fetchall()
+    out = {r[0]: r[1] for r in st}
+    out["__dup"] = c.execute("SELECT COUNT(*) FROM calls WHERE dup_of IS NOT NULL").fetchone()[0]
+    return out
+
+
+# ---------- 工作台：页面上点一下 = 跑一条 pipeline.py 命令 ----------
+@app.get("/api/jobs")
+def jobs_status():
+    from . import jobs
+    return jobs.status(init_conn(), cfg())
+
+
+@app.post("/api/jobs/{key}")
+def jobs_start(key: str, payload: dict = None):
+    from . import jobs
+    payload = payload or {}
+    try:
+        limit = int(payload.get("limit") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "limit 要是数字（0=全部）")
+    try:
+        return jobs.start(key, limit)
+    except KeyError as e:
+        raise HTTPException(404, str(e.args[0] if e.args else e))
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.post("/api/jobs/{key}/stop")
+def jobs_stop(key: str):
+    from . import jobs
+    try:
+        return jobs.stop(key)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.get("/api/jobs/{key}/log")
+def jobs_log(key: str, tail: int = 60):
+    from . import jobs
+    if key not in jobs.STAGE_BY_KEY and key not in ("chain", "auto"):
+        raise HTTPException(404, "没有这个任务")
+    text = jobs.tail(key if key != "auto" else "chain", max(500, tail * 120))
+    return {"key": key, "text": text}
+
+
+# ---------- 查重与专线：查看结果、纠正判定（都不碰磁盘上的原始录音） ----------
+@app.get("/api/dedup")
+def dedup_view(limit: int = 200):
+    from . import dedup
+    c = init_conn()
+    return {"summary": dedup.summary(c), "groups": dedup.list_groups(c, limit)}
+
+
+@app.post("/api/dedup/{call_id}/canonical")
+def dedup_canonical(call_id: int):
+    from . import dedup
+    c = init_conn()
+    try:
+        return dedup.set_canonical(c, call_id)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/dedup/{call_id}/unmark")
+def dedup_unmark(call_id: int):
+    from . import dedup
+    c = init_conn()
+    if not c.execute("SELECT 1 FROM calls WHERE id=?", (call_id,)).fetchone():
+        raise HTTPException(404, "通话不存在")
+    return dedup.unmark(c, call_id)
+
+
+@app.get("/api/lines")
+def lines_view():
+    from . import naming, sharedline
+    c = init_conn()
+    out = sharedline.report_counts(c)
+    # line_kind 要跑过一次「查重」或「专线分人」才会写进库；没跑过时不该让页面说"认出 0 条专线"，
+    # 这里按同样的规则现算一遍（只读，不写库）。
+    extra = cfg().get("shared_line_names")
+    out["shared_calls"] = sum(
+        1 for r in c.execute("SELECT contact_hint, phone FROM calls WHERE dup_of IS NULL")
+        if naming.classify_line(r["contact_hint"], r["phone"], extra) == "shared_line")
+    return {"lines": sharedline.report(c), **out}
+
+
+@app.post("/api/lines/{seat_id}/merge-back")
+def lines_merge_back(seat_id: int):
+    from . import sharedline
+    c = init_conn()
+    try:
+        return sharedline.merge_back(c, seat_id)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+
