@@ -14,18 +14,29 @@ from typing import Optional
 DATE_RE = re.compile(r"(?P<y>20\d{2})[-_.]?#?(?P<m>\d{1,2})[-_.]?(?P<d>\d{1,2})")
 TIME_RE = re.compile(r"(?<!\d)(?P<h>\d{1,2})[.:_-](?P<mi>\d{2})(?:[.:_-](?P<s>\d{2}))?(?!\d)")
 TIME4_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3])([0-5]\d)(?!\d)")
-PHONE_RE = re.compile(r"(?<!\d)(?:\+?86[\s-]*)?(?P<mob>1[3-9]\d[\s-]?\d{4}[\s-]?\d{4})(?!\d)|(?<!\d)(?P<land>(?:0\d{2,3}-?)?\d{7,8})(?!\d)")
+# 座机两段都要挑头非 0：区号 '0XX' 首位不可能是 0，本地市话号也不以 0 开头。
+# 录音笔流水号（形如 00 + 6 位，示例 00123456）正好 8 位，旧规则会把它整个
+# 当成本地市话号存进 phone。
+PHONE_RE = re.compile(r"(?<!\d)(?:\+?86[\s-]*)?(?P<mob>1[3-9]\d[\s-]?\d{4}[\s-]?\d{4})(?!\d)|(?<!\d)(?P<land>(?:0[1-9]\d{1,2}-?)?[1-9]\d{6,7})(?!\d)")
 COMPACT_DT_RE = re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})[_-]?(\d{2})(\d{2})(\d{2})?(?!\d)")
+# 通话记录 App 的双 6 位段：Calling_张三_150322_190206 = 时分秒 + 年月日(YYMMDD)，
+# 姓名与日期都是占位示例。实测这批 11760 个配对「时间在前、日期在后」无一反例，
+# 而这类文件的 mtime 是拷进归档盘的时间，与真实通话时间差好几天都有，所以只认文件名。
+STAMP_PAIR_RE = re.compile(r"(?<!\d)(?P<hh>\d{2})(?P<mi>\d{2})(?P<ss>\d{2})"
+                           r"_(?P<y>\d{2})(?P<mo>\d{2})(?P<d>\d{2})(?!\d)")
 MOBILE_RE = re.compile(r"1[3-9]\d{9}")   # 去掉分隔符后的标准手机号，用于「手机号优先」
 SPACED_DIGITS_RE = re.compile(r"\d(?:[\s-]\d){5,}")  # "1 3 8 0 0 1 3 8 0 0 0" 这类逐位带分隔的号码
 # 座机/热线常写成分组带空格：'010 6598 1234'、'400 610 1234'（示例号码为占位，非真实号码）
 DIGIT_GROUPS_RE = re.compile(r"(?<!\d)\d{3,4}(?:[\s-]+\d{3,4}){1,2}(?!\d)")
 # 手机/座机都没有时的身份线索：95xxx 特服、10086/12306、400/800 热线、00/+ 国际直拨
+# 国际直拨这一条限死位数：国家码首位不为 0，去掉 00/+ 之后 8~13 位（E.164 全长上限 15）。
+# 之前写成宽松的 \d{8,15}，录音笔流水号（00 + 6 位）和拼接串（00 + 14 位）都从这里
+# 溜进了 phone；真正的国际直拨（形如 '00 852 1234 5678'，示例为占位号码）照样过。
 HOTLINE_RE = re.compile(
-    r"(?<!\d)(?P<hl>(?:95\d{2,4}|1[0123]\d{3,4}|[48]00\d{7,9}|(?:00|\+)[\s-]?\d{8,15}))(?!\d)")
+    r"(?<!\d)(?P<hl>(?:95\d{2,4}|1[0123]\d{3,4}|[48]00\d{7,9}|(?:00|\+)[\s-]?[1-9]\d{7,12}))(?!\d)")
 
 NOISE_WORDS = {
-    "rec", "record", "recording", "call", "callout", "callin", "incoming", "outgoing",
+    "rec", "record", "recording", "call", "calling", "callout", "callin", "incoming", "outgoing",
     "m4a", "mp3", "wav", "amr", "ogg", "opus", "flac", "aac", "video", "audio",
     "auto", "cnt", "cnm", "dial", "from", "to", "with", "tel", "phone", "sim",
 }
@@ -121,6 +132,18 @@ def parse_filename(path: str | Path, file_mtime: Optional[float] = None,
     stem = p.stem
     out: dict = {"name": None, "phone": None, "call_time": None, "matched_by": None}
     work = _squash_spaced_digits(stem)  # '+86 138 0013 8000' -> '+8613800138000'
+
+    # 双 6 位段「时分秒_年月日」优先，它是这类 App 唯一写的通话时间
+    sp = STAMP_PAIR_RE.search(work)
+    if sp:
+        hh, mi, ss, y, mo, d = (int(x) for x in sp.groups())
+        if 15 <= y <= 30 and hh <= 23 and mi <= 59 and ss <= 59 and 1 <= mo <= 12 and 1 <= d <= 31:
+            try:
+                out["call_time"] = datetime(2000 + y, mo, d, hh, mi, ss).isoformat(timespec="seconds")
+                out["matched_by"] = "stamp_pair"
+                work = (work[:sp.start()] + " " + work[sp.end():]).strip()
+            except ValueError:
+                pass
 
     # Chinese date form first (2024年1月5日)
     cm = CN_DATE_RE.search(work)

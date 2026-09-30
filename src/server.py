@@ -296,8 +296,10 @@ def list_calls(q: str = "", contact: str = "", who: str = "", date_from: str = "
     elif dup == "all":
         w = ["1=1"]
     if q:
-        w.append("(c.filename LIKE ? OR c.summary LIKE ? OR s.text_zh LIKE ?)")
-        p += [f"%{q}%"] * 3
+        # text_sv 是精修前的原文。Qwen3-ASR 习惯把数字写成汉字（"77 330" → "七七三三零"），
+        # 只查精修后的 text_zh 会让输阿拉伯数字的检索整段漏掉，所以两种写法都查。
+        w.append("(c.filename LIKE ? OR c.summary LIKE ? OR s.text_zh LIKE ? OR s.text_sv LIKE ?)")
+        p += [f"%{q}%"] * 4
     if contact:
         w.append("(c.contact_hint LIKE ? OR c.phone LIKE ? OR ct.name LIKE ?)")
         p += [f"%{contact}%"] * 3
