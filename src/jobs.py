@@ -274,9 +274,14 @@ def _run_stage(key: str, limit: int = 0, origin: str = "manual") -> Optional[int
         if limit:
             args += ["--limit", str(int(limit))]
         logf = open(_log_path(key), "a", encoding="utf-8", errors="replace")
+        q0 = _queue_size(key, cfg)
+        if limit and q0:
+            # 「先跑 50 通试试」的分母是 50，不是整个队列，否则进度条永远停在 2.6%
+            q0 = min(q0, int(limit))
         job = {"key": key, "running": True, "origin": origin, "started": dbm.now(),
                "finished": "", "rc": None, "stopped": False, "stop": threading.Event(),
-               "pid": 0, "logf": logf, "label": STAGE_BY_KEY[key]["label"]}
+               "pid": 0, "logf": logf, "label": STAGE_BY_KEY[key]["label"],
+               "t0": time.time(), "t1": None, "queue0": q0, "limit": int(limit or 0)}
         _jobs[key] = job
         _write(f"开始（{origin}）：pipeline.py {' '.join(args)}", logf)
         try:
@@ -286,7 +291,7 @@ def _run_stage(key: str, limit: int = 0, origin: str = "manual") -> Optional[int
                                     creationflags=_hide_flags())
         except OSError as e:                  # python 路径没了等：别让线程静默消失
             _write(f"启动失败：{e}", logf)
-            job.update(running=False, rc=127, finished=dbm.now(), proc=None)
+            job.update(running=False, rc=127, finished=dbm.now(), t1=time.time(), proc=None)
             logf.close()
             return 127
         job["proc"] = proc
@@ -298,7 +303,7 @@ def _run_stage(key: str, limit: int = 0, origin: str = "manual") -> Optional[int
         note = "（已手动停止，进度已保存）" if stopped else _rc_note(rc)
         _write(f"结束 rc={rc}：{note}", logf)
         logf.close()
-        job.update(running=False, rc=rc, stopped=stopped, finished=dbm.now())
+        job.update(running=False, rc=rc, stopped=stopped, finished=dbm.now(), t1=time.time())
     return rc
 
 
@@ -311,23 +316,99 @@ def _stage_available(key: str, cfg) -> tuple:
     return True, ""
 
 
+# ---------- 进度：分母是开跑前的排队数，分子是已经被这一步做掉的 ----------
+def _queue_size(key: str, cfg):
+    fn = STAGE_BY_KEY[key].get("pending")
+    if not fn:
+        return None
+    conn = None
+    try:
+        conn = dbm.connect(cfg["db_path"])
+        return fn(conn, cfg)
+    except Exception:
+        return None                       # 口径查不出来就不画条，别画一条假的
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _progress(job: dict, st: dict, pending_now, now: float) -> dict:
+    """跑动中的进度都从「排队数在往下掉」推出来，不依赖子进程配合打印。
+
+    排队数在跑的过程中可能变大（扫描又进了新录音），所以 done 夹在 [0, 总数]，
+    且在跑时最多只报 99%——真 100% 意味着这一步结束了，那必须由结束本身来说。
+    """
+    counted = bool(st.get("pending"))
+    t0 = job.get("t0")
+    out = {"kind": "counted" if counted else ("blind" if t0 else "none"),
+           "elapsed_sec": round((job.get("t1") or now) - t0, 1) if t0 else None}
+    q0 = job.get("queue0")
+    if counted and q0:
+        done = max(0, min(q0, q0 - (pending_now if pending_now is not None else q0)))
+        out.update(total=q0, done=done,
+                   pct=round(min(99.0, done * 100.0 / q0), 1) if job.get("running") else 100.0)
+        el = out["elapsed_sec"]
+        if job.get("running") and done and el:
+            per = el / done
+            out["sec_per_item"] = round(per, 2)
+            out["eta_sec"] = round((q0 - done) * per)
+    elif counted and pending_now is not None:
+        out.update(total=None, done=0, pct=100.0 if pending_now == 0 else 0.0)
+    return out
+
+
+def _step(job: dict, stages: list, at: str, states: dict) -> list:
+    """把一键/挂机的 8 步摊成页面上的阶梯：每步只有 待办/在跑/已完成/让位/跳过。
+
+    整夜挂机每轮重画一遍，所以轮次也要报出去，否则页面上永远停在「第 3 步」。
+    """
+    return [{"key": k, "label": STAGE_BY_KEY[k]["label"], "icon": STAGE_BY_KEY[k]["icon"],
+             "state": ("running" if k == at and job.get("running")
+                       else states.get(k, "waiting"))} for k in stages]
+
+
+def _step_state(rc, stopped: bool) -> str:
+    if rc is None:
+        return "yielded"              # 已有实例在跑，这一步被让开了
+    if rc == 0:
+        return "done"
+    if rc == 76:
+        return "yielded"
+    if rc == 75:
+        return "mem"
+    if stopped or rc < 0 or rc > 128:
+        return "stopped"
+    return "failed"
+
+
 # ---------- 一键更新 / 整夜挂机 ----------
 def _run_chain(job, stages, loop: bool) -> None:
     cfg = config.load()
+    states: dict = {}
+    at = None
+    job["rounds"] = 0
     while not job["stop"].is_set():
+        job["rounds"] += 1
+        states = {}
+        job["steps"] = _step(job, stages, None, states)
         for key in stages:
             if job["stop"].is_set():
                 break
+            at = key
+            job["at"] = at
+            job["steps"] = _step(job, stages, at, states)
             ok, why = _stage_available(key, cfg)
             if not ok:
+                states[key] = "skipped"
                 _write(f"跳过 {STAGE_BY_KEY[key]['label']}：{why}", job["logf"])
+                job["steps"] = _step(job, stages, at, states)
                 continue
             _write(f"— 阶段：{STAGE_BY_KEY[key]['label']}", job["logf"])
             rc = _run_stage(key, origin=job["key"])
-            if rc is None:
-                _write(f"跳过 {STAGE_BY_KEY[key]['label']}：已有实例在跑", job["logf"])
-            else:
-                _write(f"— 阶段结束：{STAGE_BY_KEY[key]['label']} · {_rc_note(rc)}", job["logf"])
+            states[key] = _step_state(rc, job["stop"].is_set())
+            _write(f"— 阶段结束：{STAGE_BY_KEY[key]['label']} · {_rc_note(rc) if rc is not None else '已有实例在跑，让开'}",
+                   job["logf"])
+            job["steps"] = _step(job, stages, at, states)
             if job["stop"].is_set():
                 break
         if not loop:
@@ -338,7 +419,8 @@ def _run_chain(job, stages, loop: bool) -> None:
     with _lock:
         if loop:
             _write("整夜挂机已结束", job["logf"])
-        job.update(running=False, finished=dbm.now())
+        job.update(running=False, finished=dbm.now(), at=None,
+                   steps=_step(job, stages, None, states))
         job["logf"].close()
 
 
@@ -351,7 +433,9 @@ def _start_chain(key: str, loop: bool) -> dict:
         logf = open(_log_path("chain"), "a", encoding="utf-8", errors="replace")
         job = {"key": key, "label": "一键更新全部" if not loop else "整夜自动摄取",
                "running": True, "stop": threading.Event(), "started": dbm.now(),
-               "finished": "", "rc": None, "logf": logf, "loop": loop}
+               "finished": "", "rc": None, "logf": logf, "loop": loop,
+               "t0": time.time(), "t1": None, "at": None, "rounds": 0}
+        job["steps"] = _step(job, CHAIN_STAGES, None, {})
         _chain_job = job
         _write(f"开始：{'整夜循环' if loop else '单轮全跑'} -> {' → '.join(CHAIN_STAGES)}", logf)
     threading.Thread(target=_run_chain, args=(job, CHAIN_STAGES, loop), daemon=True).start()
@@ -396,6 +480,7 @@ def stop(key: str) -> dict:
 
 
 def status(conn, cfg) -> dict:
+    now = time.time()
     stages = []
     for st in STAGES:
         key = st["key"]
@@ -417,6 +502,7 @@ def status(conn, cfg) -> dict:
             "rc": rc, "note": note,
             "started": job.get("started", ""), "finished": job.get("finished", ""),
             "pid": job.get("pid", 0),
+            "progress": _progress(job, st, pending, now),
             "last_line": _last_line(key) if (job or _log_path(key).exists()) else "",
             "available": ok, "unavailable": why,
         })
@@ -426,6 +512,10 @@ def status(conn, cfg) -> dict:
         "chain": {"running": bool(chain.get("running")), "label": chain.get("label", ""),
                   "started": chain.get("started", ""), "finished": chain.get("finished", ""),
                   "loop": bool(chain.get("loop")),
+                  "steps": chain.get("steps", []), "at": chain.get("at", ""),
+                  "rounds": chain.get("rounds", 0),
+                  "elapsed_sec": round((chain.get("t1") or now) - chain["t0"], 1)
+                  if chain.get("t0") else None,
                   "last_line": tail("chain", 1200).splitlines()[-1:] or [""]},
         "chain_stages": CHAIN_STAGES,
         "sleep_sec": AUTO_SLEEP_SEC,

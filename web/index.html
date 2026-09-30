@@ -106,9 +106,38 @@ td.fn{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   word-break:break-all}
 .job .st .num{color:var(--slate)}
 .job.running{border-color:var(--amber-dim)}
+.job.starting{border-color:var(--amber-dim);box-shadow:0 0 0 1px var(--amber-dim) inset}
 .dot2{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--amber);
   margin-right:6px;animation:blink 1.1s infinite}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+/* 进度：一条信号电平表，不做圆角胶囊 */
+.meter{position:relative;height:5px;background:#101215;border:1px solid var(--line);
+  border-radius:2px;overflow:hidden;margin-top:9px}
+.meter i{position:absolute;left:0;top:0;bottom:0;width:0;
+  background:linear-gradient(180deg,#f0b455,var(--amber));
+  transition:width .45s cubic-bezier(.3,.7,.3,1)}
+.meter.done i{background:linear-gradient(180deg,#7ac4b6,var(--teal))}
+.meter.hold i{background:linear-gradient(180deg,var(--sand),#8a765a)}
+.meter.blind i{width:36%;background:linear-gradient(90deg,transparent,var(--amber-dim),transparent);
+  animation:sweep 1.7s linear infinite}
+@keyframes sweep{from{transform:translateX(-100%)}to{transform:translateX(310%)}}
+.plabel{display:flex;gap:9px;align-items:baseline;font-size:11px;color:var(--faint);
+  margin-top:5px;min-height:16px}
+.plabel b{font-family:'Space Grotesk',system-ui;font-weight:500;font-size:12px;color:var(--slate)}
+.plabel .eta{margin-left:auto;color:var(--dim)}
+/* 一键/挂机的 8 步阶梯 */
+.rail{display:flex;gap:5px;flex-wrap:wrap;margin:10px 0 2px}
+.rail .rp{display:flex;align-items:center;gap:5px;padding:3px 8px;font-size:11px;
+  color:var(--faint);border:1px solid var(--line);border-radius:3px;background:#15171b}
+.rail .rp i{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.7}
+.rail .rp.on{color:var(--amber);border-color:var(--amber-dim);background:#241f16}
+.rail .rp.on i{animation:blink 1.1s infinite}
+.rail .rp.done{color:var(--teal);border-color:#2c4a44}
+.rail .rp.warn{color:#d96c5f;border-color:#4a2c28}
+.btn.load[disabled]{opacity:.85;cursor:progress}
+@media (prefers-reduced-motion:reduce){
+  .meter.blind i,.rail .rp.on i,.dot2{animation:none}
+  .meter i{transition:none}}
 #logbox{background:#101215;border:1px solid var(--line);border-radius:8px;padding:12px 14px;
   font-family:Consolas,'Courier New',monospace;font-size:12px;line-height:1.65;color:#b9c0c9;
   white-space:pre-wrap;word-break:break-all;max-height:340px;overflow:auto;margin:0}
@@ -184,7 +213,7 @@ function renderNav(){nav.innerHTML='';pages.forEach(([k,t])=>{const b=document.c
   b.textContent=t;b.className=cur===k?'on':'';b.setAttribute('aria-current',cur===k?'page':'false');
   b.onclick=()=>{cur=k;renderNav();leavePage();P[cur]()};nav.appendChild(b)})}
 function leavePage(){ // 离开工作台/查重页就停掉它们的轮询
-  if(cur!=='console'){clearInterval(jobTimer);clearInterval(logTimer)}
+  if(cur!=='console'){clearTimeout(jobTimer);clearTimeout(logTimer)}
   if(cur!=='dedup')clearInterval(ddTimer);
   for(const c of [...CH]){if(!c.isDisposed())c.dispose();CH.delete(c)}}  // 换页就把图表实例放掉，别攒着
 async function J(u){const r=await fetch(u);if(!r.ok)throw new Error(r.status+' '+u);return r.json()}
@@ -626,17 +655,32 @@ async function graph(){
 /* ================= 工作台（点按钮 = 跑命令） ================= */
 let jobTimer=null, logTimer=null, logKey='chain', logPinned=false;
 const LIMITABLE={run:1, refine:1, summarize:1};
+const jobEls={};          // key -> 这张卡片要就地更新的元素（不再整块重画，见 tickJobs）
+const optStart={};        // key -> {t,limit}：点下「开始」到服务器承认在跑之间的那段空白
+let jobData=null, lastPoll=0;
+
+const unitOf=u=>(u||'').split('待')[0]||'项';
+function fmtDur(sec){ if(sec==null) return ''; const s=Math.round(sec);
+  if(s<60) return s+' 秒'; const m=Math.round(s/60);
+  return m<60? m+' 分' : Math.floor(m/60)+' 时 '+(m%60)+' 分'; }
+function fmtClock(sec){ const s=Math.max(0,Math.round(sec||0));
+  return s<60? s+' 秒' : Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
+function stageOf(k){ return (jobData&&jobData.stages||[]).find(s=>s.key===k) }
+function ctago(){ cur='console'; renderNav(); P.console() }
 
 /* 总览页顶部那条：有活儿/在跑活儿就冒出来，点一下进工作台 */
 async function fillCta(){
   const box=document.getElementById('cta'); if(!box)return;
   let d; try{ d=await J('/api/jobs') }catch(e){ return }
-  const running=d.stages.filter(s=>s.running).map(s=>s.label);
-  if(d.chain.running)running.push(d.chain.label);
-  if(running.length){
+  const runs=d.stages.filter(s=>s.running), ch=d.chain||{};
+  if(ch.running||runs.length){
+    const one=runs[0], p=one?(one.progress||{}):{}, cur2=ch.at?d.stages.find(s=>s.key===ch.at):null;
+    const what=ch.running?esc(ch.label)+(cur2?' · '+esc(cur2.label):''):esc(one.label);
+    const sp=cur2&&cur2.progress&&cur2.progress.total?` 本步 ${cur2.progress.pct}%`
+             :(p.total?` ${p.done}/${p.total}${unitOf(one.unit)}`:'');
     box.innerHTML=`<div class="card" style="margin:20px 0 0"><span class="dot2"></span>`+
-      `后台正在跑：${esc(running.join('、'))}
-      <button class="btn sm" id="ctago" style="margin-left:10px">看进度</button></div>`;
+      `后台正在跑：${what}${sp} `+
+      ` <button class="btn sm" id="ctago" style="margin-left:10px">看进度</button></div>`;
   }else{
     const todo=d.stages.filter(s=>s.pending>0);
     if(!todo.length){box.innerHTML='';return}
@@ -644,7 +688,7 @@ async function fillCta(){
       todo.map(s=>`<b class="num" style="color:var(--amber)">${s.pending}</b> ${esc(s.unit)}`).join(' · ')+
       ` <button class="btn sm prim" id="ctago" style="margin-left:10px">去工作台点一下</button></div>`;
   }
-  box.querySelector('#ctago').onclick=()=>{cur='console';renderNav();P.console()};
+  box.querySelector('#ctago').onclick=ctago;
 }
 
 async function POSTJ(u,body){
@@ -654,50 +698,132 @@ async function POSTJ(u,body){
   if(!r.ok)throw new Error(typeof j.detail==='string'?j.detail:('HTTP '+r.status));
   return j;
 }
-function jobCard(s){
-  const pend = s.pending==null
-    ? `<b style="font-size:14px;color:var(--slate);line-height:1.7">随时可点</b>`
-    : `<b class="num">${s.pending}</b><span>${esc(s.unit)}</span>`;
-  let acts;
-  if(!s.available){
-    acts=`<span class="muted" style="font-size:12px">${esc(s.unavailable)}</span>`;
-  }else if(s.running){
-    acts=`<button class="btn sm stop" data-stop="${s.key}">■ 停止</button>
-          <button class="btn sm" data-log="${s.key}">看日志</button>`;
-  }else{
-    acts=`<button class="btn sm prim" data-run="${s.key}" data-limit="0">开始</button>`;
-    if(LIMITABLE[s.key]&&s.pending>20)
-      acts+=`<button class="btn sm" data-run="${s.key}" data-limit="50">先跑 50 通试试</button>`;
-    acts+=`<button class="btn sm" data-log="${s.key}">看日志</button>`;
+function actsHTML(s,st){
+  if(st==='avail') return `<span class="muted" style="font-size:12px">${esc(s.unavailable)}</span>`;
+  if(st==='run') return `<button class="btn sm stop" data-stop="${s.key}">■ 停止</button>
+    <button class="btn sm" data-log="${s.key}">看日志</button>`;
+  if(st==='starting') return `<button class="btn sm prim load" disabled>启动中…</button>
+    <button class="btn sm" data-log="${s.key}">看日志</button>`;
+  let a=`<button class="btn sm prim" data-run="${s.key}" data-limit="0">开始</button>`;
+  if(LIMITABLE[s.key]&&s.pending>20)
+    a+=`<button class="btn sm" data-run="${s.key}" data-limit="50">先跑 50 通试试</button>`;
+  return a+`<button class="btn sm" data-log="${s.key}">看日志</button>`;
+}
+function buildCard(s){
+  const el=document.createElement('div');
+  el.className='card job'; el.dataset.k=s.key;
+  el.innerHTML=`<div class="top"><span class="ic">${s.icon}</span><span class="lb">${esc(s.label)}</span>
+      <span class="n"></span></div>
+    <div class="meter" hidden><i></i></div>
+    <div class="plabel" hidden><b></b><span class="cnt"></span><span class="eta"></span></div>
+    <div class="hint">${esc(s.hint)}</div><div class="acts"></div><div class="st"></div>`;
+  const q=x=>el.querySelector(x);
+  jobEls[s.key]={root:el, n:q('.n'), meter:q('.meter'), fill:q('.meter i'), lab:q('.plabel'),
+    pct:q('.plabel b'), cnt:q('.plabel .cnt'), eta:q('.plabel .eta'),
+    acts:q('.acts'), st:q('.st'), lastActs:'', lastSt:''};
+  return el;
+}
+/* 一张卡片只改文字和条宽，不动 DOM 结构：鼠标悬停、文字选中、按下中的按钮都不会被轮询打断 */
+function paintCard(s){
+  const e=jobEls[s.key]; if(!e||!s) return;
+  const p=s.progress||{};
+  let opt=optStart[s.key]||null;
+  // 服务器已经承认在跑，或这一点击的任务已经跑完（finished 不早于点击时刻），就收掉"启动中"
+  const finT=s.finished? Date.parse(String(s.finished).replace(' ','T')) : 0;
+  if(opt&&(s.running||(finT&&finT>=opt.t))){ delete optStart[s.key]; opt=null }
+  if(opt&&Date.now()-opt.t>12000){ delete optStart[s.key]; opt=null; e.failed='点了没起来：'+(s.last_line||'服务器没有回话，看下面日志'); }
+  const starting=!!opt&&!s.running;
+  const st=!s.available?'avail':(s.running?'run':(starting?'starting':'idle'));
+  e.n.className='n'+(s.pending===0?' zero':'');
+  e.n.innerHTML=s.pending==null?`<b style="font-size:14px;color:var(--slate);line-height:1.7">随时可点</b>`
+    :`<b class="num">${s.pending}</b><span>${esc(s.unit)}</span>`;
+  const acts=actsHTML(s,st);
+  if(acts!==e.lastActs){ e.acts.innerHTML=acts; e.lastActs=acts }
+  e.root.classList.toggle('running',st==='run');
+  e.root.classList.toggle('starting',starting);
+
+  const el=(p.elapsed_sec||0)+(st==='run'?(performance.now()-lastPoll)/1000:0);
+  let w=null, cls='', pctTxt='', cntTxt='', etaTxt='';
+  if(st==='starting'){
+    w=0; pctTxt='正在启动'; cntTxt='子进程正在起 python，最慢几秒后这里就变成进度';
+  }else if(st==='run'){
+    if(p.kind!=='counted'||!p.total){
+      cls='blind'; pctTxt='已跑 '+fmtClock(el);
+      cntTxt='这一步不按件计进度（或不报总数），下面日志有实时输出';
+    }else if(!p.done){
+      cls='blind'; pctTxt='已跑 '+fmtClock(el);
+      cntTxt=`共 ${p.total} ${unitOf(s.unit)}：模型装载中（首次 10–40 秒，这期间条不动）`;
+    }else{
+      w=p.pct; pctTxt=p.pct.toFixed(0)+'%';
+      cntTxt=`已完成 ${p.done} / ${p.total} ${unitOf(s.unit)} · 已跑 ${fmtClock(el)}`;
+      if(p.eta_sec!=null) etaTxt='约再 '+fmtDur(p.eta_sec);
+    }
+  }else if(p.total!=null&&st==='idle'){
+    cls='done'; w=100; pctTxt='这一轮做完';
+    cntTxt=`${p.done} / ${p.total} ${unitOf(s.unit)} · 用时 ${fmtDur(p.elapsed_sec)}`;
+  }else if(p.kind==='blind'&&p.elapsed_sec!=null){
+    cls='done'; w=100; pctTxt='刚跑完'; cntTxt='用时 '+fmtDur(p.elapsed_sec);
   }
-  const st = s.running
+  const show=w!=null||cls==='blind';
+  e.meter.hidden=!show; e.lab.hidden=!show;
+  e.meter.className='meter'+(cls?' '+cls:'');
+  if(w!=null) e.fill.style.width=w+'%';
+  else if(cls==='blind') e.fill.style.width='';   // 让 .meter.blind i 的 36% 扫带生效
+  e.pct.textContent=pctTxt; e.cnt.textContent=cntTxt; e.eta.textContent=etaTxt;
+
+  const stTxt=st==='run'
     ? `<span class="dot2"></span>正在跑 · 开始于 <span class="num">${esc((s.started||'').slice(11,19))}</span>`
-    : (s.rc==null? '还没在本页跑过（命令行跑过也算，数据都在库里）'
+    : (s.rc==null? (e.failed||'还没在本页跑过（命令行跑过也算，数据都在库里）')
        : `上次 <span class="num">${esc((s.finished||'').slice(5,16))}</span> · ${esc(s.note)}`);
-  const line = s.last_line? `<div class="muted" style="font-size:11px;margin-top:3px" title="${esc(s.last_line)}">${esc(s.last_line.slice(0,90))}</div>`:'';
-  return `<div class="card job ${s.running?'running':''}">
-    <div class="top"><span class="ic">${s.icon}</span><span class="lb">${esc(s.label)}</span>
-      <span class="n ${s.pending===0?'zero':''}">${pend}</span></div>
-    <div class="hint">${esc(s.hint)}</div>
-    <div class="acts">${acts}</div>
-    <div class="st">${st}${line}</div></div>`;
+  if(stTxt!==e.lastSt){ e.st.innerHTML=stTxt+
+      (s.last_line?`<div class="muted" style="font-size:11px;margin-top:3px" title="${esc(s.last_line)}">${esc(s.last_line.slice(0,90))}</div>`:'');
+    e.lastSt=stTxt; }
+  if(st==='run') delete e.failed;
+}
+/* 一键/挂机的 8 步阶梯 */
+function paintChain(ch){
+  const rail=V.querySelector('#rail'); if(!rail) return;
+  const steps=ch.steps||[];
+  if(rail.dataset.n!==String(steps.length)){
+    rail.innerHTML=steps.map(s=>`<div class="rp" data-k="${s.key}"><i></i>${s.icon} ${esc(s.label)}</div>`).join('');
+    rail.dataset.n=steps.length;
+  }
+  steps.forEach((s,i)=>{ const el=rail.children[i]; if(!el) return;
+    el.className='rp'+(s.state==='running'?' on':s.state==='done'?' done'
+      :(s.state==='waiting'?'':' warn')); });
+  const at=steps.findIndex(s=>s.state==='running'), cur=at<0?null:stageOf(steps[at].key);
+  const cp=cur&&cur.progress||{};
+  V.querySelector('#chainstate').innerHTML=ch.running
+    ? `<span class="dot2"></span>第 <span class="num">${at+1}/${steps.length}</span> 步 · `+
+      `${esc(steps[at]?steps[at].label:'')} `+
+      (cp.total?`— <span class="num">${cp.done}/${cp.total}${unitOf(cur.unit)}</span>（<span class="num">${cp.pct}%</span>）`
+        :`— 本步不按件计进度`)+
+      ` · 已跑 <span class="num">${fmtClock((ch.elapsed_sec||0)+(performance.now()-lastPoll)/1000)}</span>`+
+      (ch.loop&&ch.rounds>1?` · 第 <span class="num">${ch.rounds}</span> 轮`:'')
+    : (ch.started?`<span class="muted">上次 ${esc(ch.finished||ch.started)} 走完 ${steps.length} 步：`+
+        steps.filter(s=>s.state==='done').length+` 步完成、`+
+        steps.filter(s=>s.state!=='done'&&s.state!=='waiting').length+` 步被让开或跳过</span>`
+      :`<span class="muted">一条命令都不想挑，就直接点这个</span>`);
+  V.querySelector('#chain1').style.display=ch.running?'none':'';
+  V.querySelector('#chain2').style.display=ch.running?'none':'';
+  V.querySelector('#chainstop').style.display=ch.running?'':'none';
 }
 async function tickJobs(){
   let d;
   try{ d=await J('/api/jobs'); }catch(e){ return }
-  jobData=d;
-  V.querySelector('#jobs').innerHTML=d.stages.map(jobCard).join('');
-  const ch=d.chain||{};
-  V.querySelector('#chainstate').innerHTML = ch.running
-    ? `<span class="dot2"></span>${esc(ch.label)}进行中：${esc((ch.last_line&&ch.last_line[0])||'')}`
-    : `<span class="muted">${ch.started?'上次：'+esc((ch.finished||ch.started)):'一条命令都不想挑，就直接点这个'}</span>`;
-  V.querySelector('#chain1').style.display=ch.running?'none':'';
-  V.querySelector('#chain2').style.display=ch.running?'none':'';
-  V.querySelector('#chainstop').style.display=ch.running?'':'none';
+  jobData=d; lastPoll=performance.now();
+  const box=V.querySelector('#jobs'); if(!box) return;
+  if(box.children.length!==d.stages.length){
+    box.innerHTML=''; d.stages.forEach(s=>box.appendChild(buildCard(s)));
+  }
+  d.stages.forEach(paintCard);
+  paintChain(d.chain||{});
   V.querySelector('#gpunote').textContent=d.gpu_note;
+  const busy=d.chain.running||d.stages.some(s=>s.running)||Object.keys(optStart).length>0;
+  clearTimeout(jobTimer); jobTimer=setTimeout(tickJobs, busy?1000:4000);
   if(!logPinned){
     const run=d.stages.find(s=>s.running);
-    const k=ch.running?'chain':(run?run.key:null);
+    const k=d.chain.running?'chain':(run?run.key:null);
     if(k&&k!==logKey){logKey=k;tickLog(true)}
   }
 }
@@ -707,11 +833,14 @@ async function tickLog(jump){
   try{ d=await J('/api/jobs/'+logKey+'/log?tail=80') }catch(e){ return }
   const box=V.querySelector('#logbox'), near=box.scrollHeight-box.scrollTop-box.clientHeight<60;
   box.textContent=d.text;
-  V.querySelector('#logtitle').textContent='· '+(logKey==='chain'?'一键/挂机总日志':logKey)+'（最后 80 行）';
+  V.querySelector('#logtitle').textContent='· '+(logKey==='chain'?'一键/挂机总日志':(stageOf(logKey)||{}).label||logKey)+'（最后 80 行）';
+  clearTimeout(logTimer);
+  logTimer=setTimeout(tickLog, logKey==='chain'?2000:3000);
   if(near||jump)box.scrollTop=box.scrollHeight;
 }
 async function consolePage(){
-  clearInterval(jobTimer); clearInterval(logTimer); logPinned=false;
+  clearTimeout(jobTimer); clearTimeout(logTimer); logPinned=false;
+  for(const k in optStart) delete optStart[k];
   V.innerHTML=`
   <h2 style="margin-top:2px">工作台 · 所有后台活儿都在这里点，不用记命令</h2>
   <div class="card" style="margin-bottom:14px">
@@ -724,7 +853,7 @@ async function consolePage(){
   <div class="card hero">
     <div style="flex:1;min-width:270px">
       <div class="big">一键更新全部</div>
-      <div class="flow">扫描 → 转写 → 精修 → 归并联系人 → 摘要 → 图谱</div>
+      <div class="rail" id="rail"></div>
       <div class="muted" style="font-size:12px;margin-top:4px">每步都是增量的：只做还没做过的通话，跑过的不重复花算力；中途可随时停，下次接着跑。</div>
       <div id="chainstate" style="margin-top:8px;font-size:13px"></div>
     </div>
@@ -743,20 +872,33 @@ async function consolePage(){
   </div>`;
   V.querySelector('#jobs').onclick=async e=>{
     const b=e.target.closest('button'); if(!b)return;
-    const msg=m=>{V.querySelector('#chainstate').innerHTML='<span class="muted">'+esc(m)+'</span>'};
+    const say=m=>{V.querySelector('#chainstate').innerHTML='<span class="muted">'+esc(m)+'</span>';
+                  setTimeout(()=>{ if(jobData) paintChain(jobData.chain||{}) },4200)};
     try{
-      if(b.dataset.run){ await POSTJ('/api/jobs/'+b.dataset.run,{limit:+b.dataset.limit}); logKey=b.dataset.run; logPinned=false; tickLog(true); }
-      else if(b.dataset.stop){ await POSTJ('/api/jobs/'+b.dataset.stop+'/stop'); msg('已请求停止：当前这一通跑完就停，进度已保存'); }
+      if(b.dataset.run){
+        const k=b.dataset.run;
+        optStart[k]={t:Date.now(),limit:+b.dataset.limit};         // 点下去立刻有交代
+        b.disabled=true; b.classList.add('load'); b.textContent='启动中…';
+        paintCard(stageOf(k));
+        await POSTJ('/api/jobs/'+k,{limit:+b.dataset.limit});
+        logKey=k; logPinned=false; tickLog(true);
+      }
+      else if(b.dataset.stop){ await POSTJ('/api/jobs/'+b.dataset.stop+'/stop');
+        say('已请求停止：当前这一通跑完就停，进度已保存'); }
       else if(b.dataset.log){ logKey=b.dataset.log; logPinned=true; tickLog(true); }
-    }catch(err){ msg('失败：'+err.message) }
+    }catch(err){ say('失败：'+err.message); delete optStart[b.dataset.run||''] }
     tickJobs();
   };
-  V.querySelector('#chain1').onclick=async()=>{
+  V.querySelector('#chain1').onclick=async b=>{
+    b.disabled=true;
     try{await POSTJ('/api/jobs/chain')}catch(e){alert('启动失败：'+e.message)}
+    b.disabled=false;
     logKey='chain';logPinned=false;tickLog(true);tickJobs()};
-  V.querySelector('#chain2').onclick=async()=>{
+  V.querySelector('#chain2').onclick=async b=>{
     if(!confirm('整夜挂机 = 反复跑「一键更新」，每轮之间等 5 分钟，直到你点停止。\n可以合上屏幕但别关机、别让这台机器休眠。确定开始？'))return;
+    b.disabled=true;
     try{await POSTJ('/api/jobs/auto')}catch(e){alert('启动失败：'+e.message)}
+    b.disabled=false;
     logKey='chain';logPinned=false;tickLog(true);tickJobs()};
   V.querySelector('#chainstop').onclick=async()=>{
     try{await POSTJ('/api/jobs/auto/stop')}catch(e){
@@ -764,7 +906,6 @@ async function consolePage(){
     tickJobs()};
   V.querySelector('#logpick').onclick=()=>{logPinned=false;tickJobs();tickLog(true)};
   await tickJobs(); tickLog(true);
-  jobTimer=setInterval(tickJobs,2000); logTimer=setInterval(tickLog,2500);
 }
 
 /* ================= 音色库 ================= */
