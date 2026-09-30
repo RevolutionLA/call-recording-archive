@@ -47,17 +47,54 @@ def _write_tmp_wav(pcm: np.ndarray, tag: str = "seg") -> str:
     return p
 
 
+def _local_model_dir(name: str) -> str:
+    """ModelScope 别名/仓库名 → 本地已缓存的模型目录（命中就绕开联网）。
+
+    funasr 1.1.9 每次加载都要向 modelscope 问一次 revisions：断网、代理不通或
+    被网关掐掉时 snapshot_download 抛错，AutoModel 只剩 `fsmn-vad is not
+    registered` 这种看不出根因的报错，整条转写一行都跑不了——哪怕权重就在本机
+    ~/.cache/modelscope 里。缓存目录名有两种写法（- 与 _），都试。
+    """
+    if os.path.isdir(name):
+        return name
+    try:
+        from funasr.download.name_maps_from_hub import name_maps_ms
+        repo = name_maps_ms.get(name, name)
+    except Exception:
+        repo = name
+    if "/" not in repo:
+        return name
+    roots = [os.environ.get("MODELSCOPE_CACHE"),
+             str(Path.home() / ".cache" / "modelscope" / "hub")]
+    for root in filter(None, roots):
+        for cand in (repo, repo.replace("-", "_")):
+            p = Path(root) / cand
+            if (p / "configuration.json").is_file() or (p / "config.yaml").is_file():
+                return str(p)
+    return name
+
+
 class FunAsrEngine:
     def __init__(self, cfg: dict):
         self.cfg = cfg["asr"]
         self._m = {}
+        # funasr 每个 AutoModel 都会 torch.set_num_threads(ncpu)，默认 4；实测这段 CPU 活
+        # 是串行的——688s 音频的 VAD 从 1 线程到 8 线程，墙上时间不动（8.0s→8.6s），
+        # CPU 秒数却从 8.3 涨到 49（多出来的线程只空转抢核，本机还撞温度墙）。
+        # device: cpu 时不压：那时模型前向本身就吃这些线程。
+        self._ncpu = int(self.cfg.get("cpu_threads", 2) or 0)
+        if not str(self.cfg.get("device", "cuda")).startswith("cuda"):
+            self._ncpu = 0
 
     def _get(self, name):
         if name not in self._m:
             from funasr import AutoModel
             key = {"asr": "model", "vad": "vad_model", "punc": "punc_model", "spk": "spk_model"}[name]
-            self._m[name] = AutoModel(model=self.cfg[key], device=self.cfg.get("device", "cuda"),
-                                      disable_update=True)
+            kw = {"model": _local_model_dir(self.cfg[key]),
+                  "device": self.cfg.get("device", "cuda"), "disable_update": True}
+            if self._ncpu > 0:
+                kw["ncpu"] = self._ncpu
+            self._m[name] = AutoModel(**kw)
         return self._m[name]
 
     def vad_intervals(self, wav_path: str, min_ms: int = 500, merge_gap_ms: int = 350) -> list:
