@@ -31,6 +31,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # test scripts print Chinese; Windows runners default to cp1252 and crash
+      # on UnicodeEncodeError before any assertion runs. Force UTF-8 stdio.
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
