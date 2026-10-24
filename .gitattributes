@@ -1,1 +1,5 @@
+# Shell 脚本必须保持 LF：CRLF 会让 Linux/NAS 上直接报 bad interpreter
+text eol=lf
+*.sh text eol=lf
 *.bat text eol=crlf
+*.py text eol=lf
