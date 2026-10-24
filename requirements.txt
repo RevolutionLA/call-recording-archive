@@ -1,0 +1,7 @@
+# 运行 Web 工作台与流水线编排所需的核心依赖（不含模型推理栈）
+# 安装：pip install -r requirements.txt
+fastapi>=0.110
+uvicorn>=0.29
+pyyaml>=6.0
+requests>=2.31
+numpy>=1.26

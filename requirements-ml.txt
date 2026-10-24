@@ -1,0 +1,12 @@
+# 模型推理栈：转写（SenseVoiceSmall）/ VAD / 标点 / 说话人分离（CAM++）
+#
+# 说明（来自 src/funasr_engine.py 的实测记录）：
+#   - 官方推荐在独立 conda 环境跑，py3.8 + funasr 1.1.9 + torch cu118；
+#   - CPU 也能跑，但慢很多，长录音建议 GPU；
+#   - 首次运行会向 ModelScope 拉模型（约数 GB），之后可离线。
+#
+# 安装：pip install -r requirements-ml.txt
+funasr>=1.1.9
+modelscope>=1.15
+torch>=2.1
+torchaudio>=2.1

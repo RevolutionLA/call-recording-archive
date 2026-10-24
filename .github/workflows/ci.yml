@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install core deps
+        # 只装核心层：模型栈（funasr/torch）在 CI 里既慢又没必要 ——
+        # 这些测试被特意设计成"不需要 GPU、不需要模型、不写真实档案"。
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt ruff
+
+      - name: Lint (ruff)
+        run: ruff check src scripts pipeline.py --select E9,F63,F7,F82 --output-format=github
+
+      - name: Byte-compile
+        run: python -m compileall -q src scripts pipeline.py
+
+      - name: Job runner contract test
+        run: python scripts/test_jobs.py
+
+      - name: Pipeline lock test
+        run: python scripts/test_lock.py

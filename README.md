@@ -118,6 +118,24 @@ python pipeline.py web         # 打开驾驶舱 http://localhost:8760
 
 文件名格式不用先改名：手机号、`010 6234 5678` 这类分组座机、95xxx/10086/400 特服热线、`2024-03-15 14:30`、`20240315_201530`、`2024年1月5日`、`REC_`/`CallRecording_`/`通话录音` 前缀、中文姓名与英文名都直接认（示例号码均为占位）；改规则后跑一次 `refresh` 回填历史行。
 
+### 方式三：Linux / macOS / NAS（不做双击党，走一条命令）
+
+NAS 与自建服务器上本来就没有 `.bat` 可用。两个脚本对位 Windows 的两个双击：
+
+```bash
+pip install -r requirements.txt          # 核心依赖（Web + 编排，不含模型栈）
+pip install -r requirements-ml.txt       # 模型栈（funasr/torch，首次会拉数 GB 模型）
+cp config.example.yaml config.yaml       # 按你的录音目录改 source
+
+./scripts/start.sh                       # 后台起驾驶舱，打印本机与局域网地址
+./scripts/start.sh --foreground          # 前台跑，Ctrl-C 结束
+CALLREC_PORT=9000 ./scripts/start.sh     # 指定端口
+
+./scripts/stop.sh                        # 停止（进度按通话保存，可续跑）
+```
+
+> 端口被占（NAS 上很常见）时用 `CALLREC_PORT` 换一个；日志在 `logs/web.log`，PID 在 `logs/web.pid`。
+
 ## 架构
 
 ```
@@ -172,7 +190,11 @@ graph + voices + web 驾驶舱（FastAPI + 自绘 Canvas / ECharts，全本地�
 
 ## 截图
 
-> 深夜话务台驾驶舱 · 关系图谱 · 通话详情逐段高亮（`docs/screenshots/`）
+> **截图尚未入库**（原来这里引用的 `docs/screenshots/` 目录并不存在，是个空引用——已如实改掉）。
+>
+> 三十秒就能自己看到它长什么样：跑起驾驶舱后打开首页，会看到三个界面 —— 深夜话务台驾驶舱（通话量热力 + 接通率）、关系图谱（号码与人的连接与权重）、通话详情（转写文本逐段高亮 + 说话人色条）。
+>
+> 欢迎把你跑出来的截图提 PR 放这里（`docs/screenshots/` 建好即可）：比起作者自夸，真实用户的界面更有说服力。
 
 ## 致谢
 
